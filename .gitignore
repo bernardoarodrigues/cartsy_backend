@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Large/local inputs and generated pipeline artifacts.
+data/products_202604290549.csv
+outputs/run_*/
+outputs/latest
+
+# Keep small sample fixtures and sample deliverables commit-friendly.
+!data/products_202604290549_first20.csv
+!outputs/sample/

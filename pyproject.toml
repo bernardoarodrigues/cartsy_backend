@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cartsy-dedupe"
+version = "0.1.0"
+description = "CLI product entity-resolution pipeline for the Cartsy coding challenge."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "polars>=0.20.0",
+  "rapidfuzz>=3.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+cartsy-dedupe = "cartsy_dedupe.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cartsy_dedupe"]
