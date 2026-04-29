@@ -104,7 +104,7 @@ def extract_model_tokens(text: str) -> tuple[str, ...]:
 
 
 def _looks_like_size_only(token: str) -> bool:
-    return bool(re.fullmatch(r"\d+(ml|g|kg|oz|l)?", token))
+    return bool(re.fullmatch(r"\d+(ml|g|kg|oz|l|h)?", token))
 
 
 def extract_pack_count(text: str) -> int | None:

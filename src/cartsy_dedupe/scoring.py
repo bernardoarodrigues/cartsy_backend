@@ -67,6 +67,12 @@ def score_pair(
         score = max(score, 0.94)
     elif "asin" in matching_global_identifiers(left, right):
         score = max(score, 0.90)
+    elif (
+        feature_scores["brand"] >= 0.95
+        and feature_scores["title"] >= 0.95
+        and feature_scores["variant"] >= 0.85
+    ):
+        score = max(score, 0.88)
 
     hard_block = any(
         reason in contradictions
