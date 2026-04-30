@@ -12,3 +12,5 @@ outputs/latest
 # Keep small sample fixtures and sample deliverables commit-friendly.
 !data/products_202604290549_first20.csv
 !outputs/sample/
+
+.env
