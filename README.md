@@ -28,7 +28,7 @@ Run a smoke pipeline:
 
 ```bash
 .venv/bin/cartsy-dedupe run \
-  --input data/products_202604290549_first20.csv \
+  --input data/products_first20.csv \
   --output outputs
 ```
 
@@ -36,7 +36,7 @@ Run on the full local CSV:
 
 ```bash
 .venv/bin/cartsy-dedupe run \
-  --input data/products_202604290549.csv \
+  --input data/products.csv \
   --output outputs \
   --merge-threshold 0.84 \
   --near-miss-threshold 0.70
@@ -46,7 +46,7 @@ For a full uncapped run, pass `--max-candidate-pairs none`:
 
 ```bash
 .venv/bin/cartsy-dedupe run \
-  --input data/products_202604290549.csv \
+  --input data/products.csv \
   --output outputs \
   --merge-threshold 0.84 \
   --near-miss-threshold 0.70 \

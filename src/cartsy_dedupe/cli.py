@@ -22,15 +22,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="Ingest, normalize, dedupe, cluster, and report.")
     run.add_argument("--input", required=True, help="Input product CSV path.")
-    run.add_argument("--output", required=True, help="Output directory.")
+    run.add_argument(
+        "--output",
+        default="outputs",
+        help="Output directory root. Run artifacts go under run_<timestamp>/ unless path already starts with run_.",
+    )
     run.add_argument("--merge-threshold", type=float, default=0.84)
     run.add_argument("--near-miss-threshold", type=float, default=0.70)
-    run.add_argument("--max-block-size", type=int, default=1_500)
+    run.add_argument(
+        "--max-block-size",
+        type=parse_optional_int,
+        default=None,
+        help="Optional max block size (default: none).",
+    )
     run.add_argument(
         "--max-candidate-pairs",
         type=parse_optional_int,
-        default=2_000_000,
-        help="Maximum candidate pairs to score. Use none/null/unlimited for a full uncapped run.",
+        default=None,
+        help="Maximum candidate pairs to collect. Omit or use none/null/unlimited for uncapped.",
     )
     run.add_argument("--near-miss-limit", type=int, default=25_000)
     run.add_argument("--limit", type=int, default=None, help="Optional row limit for smoke tests.")
