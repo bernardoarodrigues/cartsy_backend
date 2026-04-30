@@ -76,6 +76,17 @@ The system uses conservative, explainable entity resolution:
 
 This favors avoiding false-positive merges, because a bad merge could attach the wrong shopping link to creator content.
 
+## Confidence Diagnostics
+
+`summary_report.json` includes threshold and explanation diagnostics:
+
+- `candidate_pairs_scored`: all generated candidate pairs evaluated by the scorer.
+- `candidate_pairs_kept`: merged pairs plus near-miss diagnostic pairs above `--near-miss-threshold`.
+- `merged_pairs`: pairs that cleared `--merge-threshold` and had no hard contradiction.
+- `near_miss_pairs`: plausible pairs below the merge threshold.
+- `threshold_sensitivity`: how many kept pairs would merge at nearby thresholds.
+- `decision_reason_counts`: top explanation signals for merged and non-merged near-miss pairs.
+
 ## With More Time
 
 - Add a richer brand alias dictionary from observed variants.

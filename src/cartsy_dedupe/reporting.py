@@ -27,17 +27,19 @@ def build_summary_report(
         "candidate_pairs_kept": sum(decisions.values()),
         "merged_pairs": decisions.get("merge", 0),
         "near_miss_pairs": decisions.get("no_merge", 0),
+        "threshold_sensitivity": threshold_sensitivity(candidate_pairs),
         "final_unique_products": len(clusters),
         "grouped_records": grouped_records,
         "duplicate_records_grouped": duplicate_records_grouped,
         "reduction_ratio": round(duplicate_records_grouped / len(products), 4) if products else 0.0,
         "confidence_distribution": confidence_distribution(confidence_values),
+        "decision_reason_counts": decision_reason_counts(candidate_pairs),
         "top_quality_flags": dict(quality_flags.most_common(20)),
         "blocking": blocking_stats,
         "largest_groups": largest_groups(clusters),
         "lowest_confidence_accepted_merges": lowest_confidence_groups(clusters),
         "elapsed_seconds": round(elapsed_seconds, 3),
-    }
+}
 
 
 def confidence_distribution(values: list[float]) -> dict[str, int]:
@@ -60,6 +62,34 @@ def confidence_distribution(values: list[float]) -> dict[str, int]:
         else:
             buckets["<0.70"] += 1
     return buckets
+
+
+def threshold_sensitivity(candidate_pairs: list[CandidatePair]) -> dict[str, int]:
+    """Show how many kept pairs would merge at nearby thresholds.
+
+    This is a diagnostic for calibration only. It does not override hard
+    contradiction behavior enforced by the scorer.
+    """
+    thresholds = [0.90, 0.88, 0.86, 0.84, 0.82, 0.80, 0.78, 0.75, 0.70]
+    return {
+        f"{threshold:.2f}": sum(1 for pair in candidate_pairs if pair.score >= threshold and "penalty:" not in pair.explanation)
+        for threshold in thresholds
+    }
+
+
+def decision_reason_counts(candidate_pairs: list[CandidatePair]) -> dict[str, dict[str, int]]:
+    counts: dict[str, Counter[str]] = {
+        "merge": Counter(),
+        "no_merge": Counter(),
+    }
+    for pair in candidate_pairs:
+        bucket = counts.setdefault(pair.decision, Counter())
+        for part in pair.explanation.split("; "):
+            if not part:
+                continue
+            key = part.split(":", 1)[0]
+            bucket[key] += 1
+    return {decision: dict(counter.most_common(20)) for decision, counter in counts.items()}
 
 
 def largest_groups(clusters: dict[str, dict[str, object]], limit: int = 10) -> list[dict[str, object]]:

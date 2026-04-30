@@ -1,9 +1,21 @@
 {
   "input_records": 5000,
   "normalized_records": 5000,
-  "candidate_pairs_generated": 536,
-  "auto_merged_pairs": 9,
-  "review_pairs": 527,
+  "candidate_pairs_scored": 7196,
+  "candidate_pairs_kept": 536,
+  "merged_pairs": 9,
+  "near_miss_pairs": 527,
+  "threshold_sensitivity": {
+    "0.90": 0,
+    "0.88": 9,
+    "0.86": 9,
+    "0.84": 9,
+    "0.82": 11,
+    "0.80": 14,
+    "0.78": 20,
+    "0.75": 23,
+    "0.70": 49
+  },
   "final_unique_products": 4993,
   "grouped_records": 12,
   "duplicate_records_grouped": 7,
@@ -14,6 +26,40 @@
     "0.86-0.90": 9,
     "0.70-0.86": 527,
     "<0.70": 0
+  },
+  "decision_reason_counts": {
+    "merge": {
+      "brand_match": 9,
+      "title_high": 9,
+      "size_match": 9,
+      "price_close": 4,
+      "model_match": 2,
+      "shade_match": 2,
+      "pack_match": 2,
+      "category_exact": 2,
+      "color_match": 1
+    },
+    "no_merge": {
+      "penalty": 900,
+      "brand_match": 522,
+      "category_exact": 489,
+      "title_high": 385,
+      "price_close": 369,
+      "model_match": 361,
+      "pack_match": 293,
+      "size_ambiguous": 270,
+      "shade_match": 270,
+      "size_match": 198,
+      "color_match": 129,
+      "title_medium": 111,
+      "pack_missing_one_side": 91,
+      "size_missing_one_side": 17,
+      "model_missing_one_side": 14,
+      "size_missing_both": 10,
+      "identifier_match": 9,
+      "scent_match": 6,
+      "generic_brand": 3
+    }
   },
   "top_quality_flags": {
     "missing_description": 1123,
@@ -232,5 +278,5 @@
       ]
     }
   ],
-  "elapsed_seconds": 3.091
+  "elapsed_seconds": 3.197
 }
