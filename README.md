@@ -37,6 +37,14 @@ Run on the full local CSV:
 
 The full raw CSV is intentionally ignored by git because it is large.
 
+Query a completed run:
+
+```bash
+.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/sample --limit 5
+.venv/bin/cartsy-dedupe group prod_91032ad7bbcb --run outputs/sample
+.venv/bin/cartsy-dedupe explain 1 2 --run outputs/sample
+```
+
 ## Architecture
 
 The pipeline is organized as layers:
@@ -89,6 +97,16 @@ This favors avoiding false-positive merges, because a bad merge could attach the
 - `threshold_sensitivity`: how many kept pairs would merge at nearby thresholds.
 - `decision_reason_counts`: top explanation signals for merged and non-merged near-miss pairs.
 - `clustering`: accepted merge edges and merge edges blocked by the cluster guard.
+
+## Layer 4 Query CLI
+
+The query commands operate only on output artifacts from a completed run:
+
+- `search`: fuzzy-searches `product_assignments.csv`.
+- `group`: prints one `dedupe_id` from `dedupe_groups.jsonl` plus its source offers.
+- `explain`: looks up a scored candidate pair in `candidate_pairs.parquet` and joins source assignment details.
+
+These commands keep the deliverable CLI-first while making the dedupe results easier to inspect during the walkthrough.
 
 ## With More Time
 

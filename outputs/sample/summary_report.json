@@ -13,7 +13,7 @@
     "0.82": 13,
     "0.80": 20,
     "0.78": 32,
-    "0.75": 46,
+    "0.75": 45,
     "0.70": 90
   },
   "final_unique_products": 4993,
@@ -49,7 +49,7 @@
       "pack_match": 253,
       "size_ambiguous": 252,
       "size_match": 185,
-      "shade_match": 164,
+      "shade_match": 157,
       "title_medium": 116,
       "color_match": 114,
       "pack_missing_one_side": 95,
@@ -282,5 +282,5 @@
       ]
     }
   ],
-  "elapsed_seconds": 3.586
+  "elapsed_seconds": 3.648
 }

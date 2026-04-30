@@ -32,6 +32,11 @@ def test_shade_extraction_avoids_words_that_only_start_with_cor() -> None:
     assert shade is None
 
 
+def test_shade_extraction_ignores_descriptive_words_after_cor() -> None:
+    _, shade, _ = extract_variant_terms("Pigmentos brilhantes e cor delicada")
+    assert shade is None
+
+
 def test_shade_extraction_requires_plausible_token() -> None:
     _, shade, _ = extract_variant_terms("Base líquida cor L60")
     assert shade == "l60"
