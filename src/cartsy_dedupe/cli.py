@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--merge-threshold", type=float, default=0.84)
     run.add_argument("--near-miss-threshold", type=float, default=0.70)
     run.add_argument("--max-block-size", type=int, default=1_500)
-    run.add_argument("--max-candidate-pairs", type=int, default=2_000_000)
+    run.add_argument(
+        "--max-candidate-pairs",
+        type=parse_optional_int,
+        default=2_000_000,
+        help="Maximum candidate pairs to score. Use none/null/unlimited for a full uncapped run.",
+    )
     run.add_argument("--near-miss-limit", type=int, default=25_000)
     run.add_argument("--limit", type=int, default=None, help="Optional row limit for smoke tests.")
 
@@ -64,6 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     artifact_search.add_argument("--type", choices=["group", "offer", "pair", "near_miss", "summary"], default=None)
     artifact_search.add_argument("--limit", type=int, default=10)
     artifact_search.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
+
+    serve = subparsers.add_parser("serve", help="Run the REST API over completed run artifacts.")
+    serve.add_argument("--runs-root", default="outputs", help="Directory containing run_* output folders.")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--reload", action="store_true")
 
     return parser
 
@@ -155,8 +167,27 @@ def main(argv: list[str] | None = None) -> int:
             print_table(results, ["score", "run_id", "artifact_type", "artifact_id", "title"])
         return 0
 
+    if args.command == "serve":
+        try:
+            import uvicorn
+
+            from .api import create_app
+        except ImportError as exc:
+            print("error: install FastAPI dependencies with `pip install -r requirements.txt`", file=sys.stderr)
+            return 1
+        os.environ["CARTSY_RUNS_ROOT"] = args.runs_root
+        app = "cartsy_dedupe.api:create_app" if args.reload else create_app(runs_root=args.runs_root)
+        uvicorn.run(app, host=args.host, port=args.port, reload=args.reload, factory=args.reload)
+        return 0
+
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def parse_optional_int(value: str) -> int | None:
+    if value.lower() in {"none", "null", "unlimited", "uncapped"}:
+        return None
+    return int(value)
 
 
 def resolve_run_output_dir(output_dir: Path, *, now: datetime | None = None) -> Path:

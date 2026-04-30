@@ -42,6 +42,18 @@ Run on the full local CSV:
   --near-miss-threshold 0.70
 ```
 
+For a full uncapped run, pass `--max-candidate-pairs none`:
+
+```bash
+.venv/bin/cartsy-dedupe run \
+  --input data/products_202604290549.csv \
+  --output outputs \
+  --merge-threshold 0.84 \
+  --near-miss-threshold 0.70 \
+  --max-block-size 5000 \
+  --max-candidate-pairs none
+```
+
 Pipeline runs write to a timestamped run directory under the output directory, so `--output outputs` writes artifacts to a path like `outputs/run_20260430_150405`. The generated `run_id` and full output path are also recorded in `summary_report.json`.
 
 The full raw CSV is intentionally ignored by git because it is large.
@@ -101,6 +113,29 @@ Query a completed run:
 Search defaults to `--backend auto`: it tries the live Postgres tables first, using exact name/SKU checks, weighted full-text search, pg_trgm title similarity, and pgvector cosine search when `OPENAI_API_KEY` is available for the query embedding. If Postgres is not running, it falls back to the exported `product_assignments.csv` fuzzy search so saved run artifacts remain portable.
 
 `index-artifacts` builds a separate Postgres/pgvector index over completed-run artifacts without replacing the file artifacts as source of truth. It creates searchable documents for dedupe groups, source offers, merge/near-miss pair evidence, and the run summary. `search-artifacts` can then retrieve graph-aware results with metadata links like `group:<dedupe_id>`, `offer:<source_id>`, and pair endpoints. Use `--no-embeddings` for lexical-only indexing; with `OPENAI_API_KEY`, both indexing and queries include semantic vectors.
+
+## REST API
+
+Serve completed run artifacts with:
+
+```bash
+.venv/bin/cartsy-dedupe serve --runs-root outputs --host 127.0.0.1 --port 8000
+```
+
+Useful endpoints:
+
+```text
+GET /health
+GET /runs
+GET /runs/{run_id}/summary
+GET /runs/{run_id}/products?q=cetaphil&brand=cetaphil&retailer=amazon_br&min_confidence=0.9
+GET /runs/{run_id}/search?q=cetaphil%20hidratante&backend=artifacts
+GET /runs/{run_id}/artifact-search?q=similar%20lipstick&type=near_miss
+GET /runs/{run_id}/groups/{dedupe_id}
+GET /runs/{run_id}/explain?source_id_a=123&source_id_b=456
+```
+
+The product list endpoint supports filtering by query text, retailer, brand, dedupe ID, decision, minimum cluster confidence, limit, and offset. Product search shares the CLI search backend options: `auto`, `postgres`, and `artifacts`.
 
 ## Deduplication Strategy
 
