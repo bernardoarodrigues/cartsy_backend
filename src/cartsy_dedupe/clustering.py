@@ -38,7 +38,7 @@ def build_clusters(
     uf = UnionFind(len(products))
     accepted_edges: list[CandidatePair] = []
     for pair in candidate_pairs:
-        if pair.decision != "auto_merge":
+        if pair.decision != "merge":
             continue
         left = id_to_index[pair.product_a_id]
         right = id_to_index[pair.product_b_id]

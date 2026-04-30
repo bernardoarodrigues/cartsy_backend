@@ -5,11 +5,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    auto_threshold: float = 0.86
-    review_threshold: float = 0.70
+    merge_threshold: float = 0.84
+    near_miss_threshold: float = 0.70
     max_block_size: int = 1_500
     max_candidate_pairs: int | None = 2_000_000
-    review_limit: int = 25_000
+    near_miss_limit: int = 25_000
     sample_pair_limit: int = 500_000
 
 

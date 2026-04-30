@@ -26,7 +26,7 @@ def write_outputs(
     clusters: dict[str, dict[str, object]],
     source_to_cluster: dict[str, str],
     report: dict[str, object],
-    review_limit: int,
+    near_miss_limit: int,
     sample_pair_limit: int,
 ) -> None:
     write_table(output_path / "normalized_products.parquet", [product.to_record() for product in products])
@@ -36,7 +36,7 @@ def write_outputs(
     )
     write_product_assignments(output_path / "product_assignments.csv", products, clusters, source_to_cluster)
     write_groups(output_path / "dedupe_groups.jsonl", clusters)
-    write_review_queue(output_path / "low_confidence_review.csv", products, candidate_pairs, review_limit)
+    write_near_misses(output_path / "near_miss_pairs.csv", products, candidate_pairs, near_miss_limit)
     (output_path / "summary_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -101,20 +101,20 @@ def write_product_assignments(
     write_csv(path, rows)
 
 
-def write_review_queue(
+def write_near_misses(
     path: Path,
     products: list[NormalizedProduct],
     candidate_pairs: list[CandidatePair],
     limit: int,
 ) -> None:
     product_by_id = {product.source_id: product for product in products}
-    review_pairs = sorted(
-        [pair for pair in candidate_pairs if pair.decision == "review"],
+    near_miss_pairs = sorted(
+        [pair for pair in candidate_pairs if pair.decision == "no_merge"],
         key=lambda pair: pair.score,
         reverse=True,
     )[:limit]
     rows: list[dict[str, object]] = []
-    for pair in review_pairs:
+    for pair in near_miss_pairs:
         left = product_by_id[pair.product_a_id]
         right = product_by_id[pair.product_b_id]
         rows.append(

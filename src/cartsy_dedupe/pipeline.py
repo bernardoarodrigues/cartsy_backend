@@ -45,10 +45,9 @@ def run_pipeline(
         result = score_pair(
             left,
             right,
-            auto_threshold=config.auto_threshold,
-            review_threshold=config.review_threshold,
+            merge_threshold=config.merge_threshold,
         )
-        if result.decision == "reject" and result.score < config.review_threshold:
+        if result.decision == "no_merge" and result.score < config.near_miss_threshold:
             continue
         candidate_pairs.append(
             CandidatePair(
@@ -71,6 +70,7 @@ def run_pipeline(
         candidate_pairs=candidate_pairs,
         clusters=clusters,
         blocking_stats=blocking_stats,
+        scored_candidate_pairs=len(pair_blocks),
         elapsed_seconds=perf_counter() - started,
     )
     write_outputs(
@@ -80,7 +80,7 @@ def run_pipeline(
         clusters=clusters,
         source_to_cluster=source_to_cluster,
         report=report,
-        review_limit=config.review_limit,
+        near_miss_limit=config.near_miss_limit,
         sample_pair_limit=config.sample_pair_limit,
     )
     return report

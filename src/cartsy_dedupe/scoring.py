@@ -36,8 +36,7 @@ def score_pair(
     left: NormalizedProduct,
     right: NormalizedProduct,
     *,
-    auto_threshold: float,
-    review_threshold: float,
+    merge_threshold: float,
 ) -> ScoreResult:
     reasons: list[str] = []
     contradictions: list[str] = []
@@ -88,12 +87,7 @@ def score_pair(
         score = min(score, 0.84)
 
     score = max(0.0, min(1.0, score))
-    if score >= auto_threshold and not hard_block:
-        decision = "auto_merge"
-    elif score >= review_threshold:
-        decision = "review"
-    else:
-        decision = "reject"
+    decision = "merge" if score >= merge_threshold and not hard_block else "no_merge"
 
     explanation_parts = reasons + [f"penalty:{item}" for item in contradictions]
     return ScoreResult(

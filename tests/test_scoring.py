@@ -25,18 +25,18 @@ def product(**overrides: str):
     return normalize_row(row)
 
 
-def test_exact_duplicate_scores_auto_merge() -> None:
+def test_exact_duplicate_scores_merge() -> None:
     left = product(id="1")
     right = product(id="2", retailer="beleza_na_web", price="9199")
-    result = score_pair(left, right, auto_threshold=0.86, review_threshold=0.70)
-    assert result.decision == "auto_merge"
-    assert result.score >= 0.86
+    result = score_pair(left, right, merge_threshold=0.84)
+    assert result.decision == "merge"
+    assert result.score >= 0.84
 
 
-def test_missing_size_does_not_reject_pair() -> None:
+def test_missing_size_does_not_block_plausible_pair() -> None:
     left = product(id="1", dimension="473ml")
     right = product(id="2", prod_name="Cetaphil Loção Hidratante", dimension="")
-    result = score_pair(left, right, auto_threshold=0.86, review_threshold=0.70)
+    result = score_pair(left, right, merge_threshold=0.84)
     assert result.score >= 0.70
     assert "clearly_incompatible_size" not in result.explanation
 
@@ -44,21 +44,21 @@ def test_missing_size_does_not_reject_pair() -> None:
 def test_equivalent_size_boosts_confidence() -> None:
     left = product(id="1", prod_name="Cetaphil Moisturizing Lotion 16 fl oz", dimension="16 fl oz")
     right = product(id="2", prod_name="Cetaphil Loção Hidratante 473ml", dimension="473ml")
-    result = score_pair(left, right, auto_threshold=0.86, review_threshold=0.70)
+    result = score_pair(left, right, merge_threshold=0.84)
     assert "size_match" in result.explanation
 
 
-def test_conflicting_clear_sizes_block_auto_merge() -> None:
+def test_conflicting_clear_sizes_block_merge() -> None:
     left = product(id="1", dimension="200ml", prod_name="Cetaphil Loção Hidratante 200ml")
     right = product(id="2", dimension="473ml", prod_name="Cetaphil Loção Hidratante 473ml")
-    result = score_pair(left, right, auto_threshold=0.86, review_threshold=0.70)
-    assert result.decision != "auto_merge"
+    result = score_pair(left, right, merge_threshold=0.84)
+    assert result.decision != "merge"
     assert "clearly_incompatible_size" in result.explanation
 
 
-def test_conflicting_brands_are_rejected_or_reviewed_not_merged() -> None:
+def test_conflicting_brands_do_not_merge() -> None:
     left = product(id="1", brand="Cetaphil")
     right = product(id="2", brand="CeraVe")
-    result = score_pair(left, right, auto_threshold=0.86, review_threshold=0.70)
-    assert result.decision != "auto_merge"
+    result = score_pair(left, right, merge_threshold=0.84)
+    assert result.decision != "merge"
     assert "conflicting_strong_brand" in result.explanation

@@ -31,8 +31,8 @@ Run on the full local CSV:
 .venv/bin/cartsy-dedupe run \
   --input data/products_202604290549.csv \
   --output outputs/run_full \
-  --auto-threshold 0.86 \
-  --review-threshold 0.70
+  --merge-threshold 0.84 \
+  --near-miss-threshold 0.70
 ```
 
 The full raw CSV is intentionally ignored by git because it is large.
@@ -46,7 +46,7 @@ The pipeline is organized as layers:
 - Blocking creates candidate pairs without comparing every row to every other row.
 - Scoring assigns an explainable confidence score using brand, title, identifiers, model tokens, variant attributes, category, specs/description, and price.
 - Clustering unions accepted duplicate pairs into canonical product groups.
-- Reporting writes assignments, group records, review candidates, candidate pairs, normalized products, and a summary report.
+- Reporting writes assignments, group records, near-miss diagnostic pairs, candidate pairs, normalized products, and a summary report.
 
 The dedupe target is the same purchasable variant when variant attributes are clear. Size is a strong signal but not an unconditional blocker: missing or ambiguous size lowers confidence, while clearly incompatible sizes on both records prevent automatic merge.
 
@@ -59,7 +59,7 @@ normalized_products.parquet
 candidate_pairs.parquet
 product_assignments.csv
 dedupe_groups.jsonl
-low_confidence_review.csv
+near_miss_pairs.csv
 summary_report.json
 ```
 
@@ -71,7 +71,8 @@ The system uses conservative, explainable entity resolution:
 
 - Strong positive evidence: matching EAN/GTIN/UPC, matching ASIN, same brand plus same title and compatible variant attributes.
 - Strong negative evidence: conflicting strong brands, conflicting global identifiers, incompatible model tokens, clearly incompatible sizes, or clearly different variant attributes.
-- Review zone: pairs that look plausible but lack enough evidence for safe auto-merge.
+- Binary decision: a pair merges only when it clears `--merge-threshold` and has no hard contradiction. Pairs below that threshold do not merge.
+- Near-miss diagnostics: pairs above `--near-miss-threshold` but below the merge threshold are written for analysis, not for a required human review workflow.
 
 This favors avoiding false-positive merges, because a bad merge could attach the wrong shopping link to creator content.
 
@@ -79,6 +80,6 @@ This favors avoiding false-positive merges, because a bad merge could attach the
 
 - Add a richer brand alias dictionary from observed variants.
 - Add category taxonomy normalization across Portuguese and English retailer paths.
-- Add a small review UI for low-confidence pairs.
+- Add calibration/evaluation tooling for near-miss pairs if labeled examples become available.
 - Add embeddings as an additional candidate-generation/scoring feature, while keeping identifiers and variant rules authoritative.
 - Add a live scraper source as a bonus ingestion adapter.

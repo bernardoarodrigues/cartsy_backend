@@ -11,6 +11,7 @@ def build_summary_report(
     candidate_pairs: list[CandidatePair],
     clusters: dict[str, dict[str, object]],
     blocking_stats: dict[str, int],
+    scored_candidate_pairs: int,
     elapsed_seconds: float,
 ) -> dict[str, object]:
     decisions = Counter(pair.decision for pair in candidate_pairs)
@@ -22,9 +23,10 @@ def build_summary_report(
     return {
         "input_records": len(products),
         "normalized_records": len(products),
-        "candidate_pairs_generated": sum(decisions.values()),
-        "auto_merged_pairs": decisions.get("auto_merge", 0),
-        "review_pairs": decisions.get("review", 0),
+        "candidate_pairs_scored": scored_candidate_pairs,
+        "candidate_pairs_kept": sum(decisions.values()),
+        "merged_pairs": decisions.get("merge", 0),
+        "near_miss_pairs": decisions.get("no_merge", 0),
         "final_unique_products": len(clusters),
         "grouped_records": grouped_records,
         "duplicate_records_grouped": duplicate_records_grouped,
