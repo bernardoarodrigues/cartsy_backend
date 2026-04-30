@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cartsy_dedupe.attributes import extract_model_tokens, extract_pack_count, extract_size, extract_variant_terms
+from cartsy_dedupe.attributes import extract_model_tokens, extract_pack_count, extract_size
 
 
 def test_extract_size_normalizes_liters_and_ounces() -> None:
@@ -25,18 +25,3 @@ def test_extract_pack_count() -> None:
 def test_model_extraction_ignores_duration_tokens() -> None:
     tokens = extract_model_tokens("Base líquida duração 24h D3 claro")
     assert "24h" not in tokens
-
-
-def test_shade_extraction_avoids_words_that_only_start_with_cor() -> None:
-    _, shade, _ = extract_variant_terms("Hidratante corporal para pele seca")
-    assert shade is None
-
-
-def test_shade_extraction_ignores_descriptive_words_after_cor() -> None:
-    _, shade, _ = extract_variant_terms("Pigmentos brilhantes e cor delicada")
-    assert shade is None
-
-
-def test_shade_extraction_requires_plausible_token() -> None:
-    _, shade, _ = extract_variant_terms("Base líquida cor L60")
-    assert shade == "l60"

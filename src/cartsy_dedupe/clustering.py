@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 
+from cartsy_dedupe.config import GENERIC_BRANDS, GLOBAL_IDENTIFIER_KEYS
+from cartsy_dedupe.schemas import CandidatePair, NormalizedProduct
+from cartsy_dedupe.text import normalize_text
+
 from .attributes import sizes_equivalent
-from .config import GENERIC_BRANDS, GLOBAL_IDENTIFIER_KEYS
-from .schemas import CandidatePair, NormalizedProduct
 
 
 class UnionFind:
@@ -112,10 +114,12 @@ def has_cluster_contradiction(products: list[NormalizedProduct], indexes: list[i
     if has_size_contradiction(members):
         return True
 
-    for attr in ("color", "shade", "scent", "pack_count"):
+    for attr in ("pack_count",):
         values = {getattr(product, attr) for product in members if getattr(product, attr)}
         if len(values) > 1:
             return True
+    if has_extracted_attribute_contradiction(members):
+        return True
     return False
 
 
@@ -132,6 +136,18 @@ def has_size_contradiction(members: list[NormalizedProduct]) -> bool:
         if first_value is None or value is None or unit != first_unit:
             return True
         if not sizes_equivalent(first_value, first_unit, value, unit):
+            return True
+    return False
+
+
+def has_extracted_attribute_contradiction(members: list[NormalizedProduct]) -> bool:
+    for key in ("product_line", "product_type", "variant_name", "color", "size", "scent", "flavor", "material", "pack_count", "model_number"):
+        values = {
+            normalize_text(product.extracted_attributes.get(key))
+            for product in members
+            if product.extracted_attributes.get(key)
+        }
+        if len(values) > 1:
             return True
     return False
 

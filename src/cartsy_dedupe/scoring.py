@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from cartsy_dedupe.config import GENERIC_BRANDS, GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
+from cartsy_dedupe.schemas import NormalizedProduct
+
 from .attributes import sizes_equivalent
-from .config import GENERIC_BRANDS, GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
-from .schemas import NormalizedProduct
 
 try:
     from rapidfuzz import fuzz
@@ -205,19 +206,6 @@ def variant_score(
 
     size = size_score(left, right, reasons, contradictions)
     scores.append(size)
-
-    for attr in ("color", "shade", "scent"):
-        left_value = getattr(left, attr)
-        right_value = getattr(right, attr)
-        if left_value and right_value:
-            if left_value == right_value:
-                reasons.append(f"{attr}_match:{left_value}")
-                scores.append(1.0)
-            else:
-                contradictions.append("clearly_incompatible_variant")
-                scores.append(0.0)
-        elif left_value or right_value:
-            scores.append(0.65)
 
     if left.pack_count and right.pack_count:
         if left.pack_count == right.pack_count:

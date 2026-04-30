@@ -26,20 +26,6 @@ STOPWORDS = {
     "with",
 }
 
-BRAND_ALIASES = {
-    "l oreal": "loreal",
-    "loreal paris": "loreal",
-    "l oreal paris": "loreal",
-    "loreal professionnel": "loreal professionnel",
-    "l oreal professionnel": "loreal professionnel",
-    "la roche posay": "la roche posay",
-    "wella professionals": "wella professionals",
-    "wella professional": "wella professionals",
-    "cerave": "cerave",
-    "eucerin": "eucerin",
-}
-
-
 def strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
@@ -55,8 +41,7 @@ def normalize_text(value: object) -> str:
 
 
 def normalize_brand(value: object) -> str:
-    brand = normalize_text(value)
-    return BRAND_ALIASES.get(brand, brand)
+    return re.sub(r"[^a-z0-9]+", "", normalize_text(value))
 
 
 def normalize_category(value: object) -> tuple[str, str]:

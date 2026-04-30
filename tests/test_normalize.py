@@ -8,8 +8,9 @@ def test_text_normalization_removes_accents_and_punctuation() -> None:
     assert normalize_text("Óleo Wella - 30ml!") == "oleo wella 30ml"
 
 
-def test_brand_aliases_and_category_separators() -> None:
-    assert normalize_brand("L'Oréal Paris") == "loreal"
+def test_brand_normalization_removes_symbols_spaces_and_accents() -> None:
+    assert normalize_brand("L'Oréal Paris") == "lorealparis"
+    assert normalize_brand("L OREAL-PARIS") == "lorealparis"
     category, leaf = normalize_category("Beleza›Pele›Rosto›Hidratantes")
     assert category == "beleza>pele>rosto>hidratantes"
     assert leaf == "hidratantes"
@@ -63,3 +64,29 @@ def test_invalid_json_is_flagged_without_crashing() -> None:
     assert "invalid_description_json" in product.quality_flags
     assert "invalid_specs_json" in product.quality_flags
     assert "missing_brand" in product.quality_flags
+
+
+def test_normalization_does_not_guess_open_ended_variant_terms() -> None:
+    product = normalize_row(
+        {
+            "id": "3",
+            "prod_name": "Base líquida cor L60 baunilha",
+            "brand": "Marca",
+            "category": "Beleza>Maquiagem",
+            "description": "",
+            "specs": "{}",
+            "img_links": "",
+            "url": "",
+            "created_at": "",
+            "updated_at": "",
+            "retailer": "x",
+            "price": "1000",
+            "sku": "",
+            "dimension": "",
+        }
+    )
+
+    assert not hasattr(product, "color")
+    assert not hasattr(product, "shade")
+    assert not hasattr(product, "scent")
+    assert product.extracted_attributes == {}

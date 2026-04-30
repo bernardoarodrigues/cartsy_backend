@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 
-from .text import normalize_text
+from cartsy_dedupe.text import normalize_text
 
 IDENTIFIER_PATTERNS = {
     "asin": re.compile(r"\bB0[A-Z0-9]{8}\b|\bB00[A-Z0-9]{7}\b", re.I),
@@ -18,76 +18,6 @@ SPEC_IDENTIFIER_KEYS = {
     "upc": "upc",
     "codigo ean": "ean",
     "código ean": "ean",
-}
-
-COLOR_TERMS = {
-    "black",
-    "blue",
-    "branco",
-    "branca",
-    "marrom",
-    "preto",
-    "preta",
-    "red",
-    "rosa",
-    "rose",
-    "silver",
-    "white",
-}
-
-SHADE_WORDS = {
-    "amarelo",
-    "azul",
-    "bege",
-    "black",
-    "brown",
-    "claro",
-    "dark",
-    "deep",
-    "escuro",
-    "fair",
-    "light",
-    "medio",
-    "medium",
-    "nude",
-    "pink",
-    "preto",
-    "rosa",
-    "white",
-}
-
-INVALID_SHADE_TOKENS = {
-    "acao",
-    "as",
-    "body",
-    "cabelo",
-    "com",
-    "corpo",
-    "corporal",
-    "da",
-    "de",
-    "delicada",
-    "delicado",
-    "do",
-    "em",
-    "es",
-    "face",
-    "intensa",
-    "intenso",
-    "mais",
-    "para",
-    "pele",
-    "po",
-    "poral",
-}
-
-SCENT_TERMS = {
-    "baunilha",
-    "coco",
-    "floral",
-    "lavanda",
-    "menta",
-    "vanilla",
 }
 
 SIZE_RE = re.compile(
@@ -193,34 +123,6 @@ def convert_size(value: float, unit: str) -> tuple[float, str]:
     if unit == "kg":
         return value * 1000.0, "g"
     return value, unit
-
-
-def extract_variant_terms(text: str) -> tuple[str | None, str | None, str | None]:
-    normalized = normalize_text(text)
-    tokens = set(normalized.split())
-    color = next((term for term in sorted(COLOR_TERMS) if term in tokens), None)
-    scent = next((term for term in sorted(SCENT_TERMS) if term in tokens), None)
-    shade = _extract_shade(normalized)
-    return color, shade, scent
-
-
-def _extract_shade(text: str) -> str | None:
-    match = re.search(r"\b(?:cor|shade|tom)\s+([a-z0-9]{2,12})\b", text)
-    if match:
-        candidate = match.group(1)
-        if is_valid_shade_token(candidate):
-            return candidate
-    return None
-
-
-def is_valid_shade_token(token: str) -> bool:
-    if token in INVALID_SHADE_TOKENS:
-        return False
-    if token in SHADE_WORDS:
-        return True
-    if any(ch.isdigit() for ch in token):
-        return 2 <= len(token) <= 8
-    return len(token) >= 4
 
 
 def sizes_equivalent(a_value: float, a_unit: str, b_value: float, b_unit: str) -> bool:

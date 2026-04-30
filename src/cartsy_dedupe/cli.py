@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .config import PipelineConfig
@@ -58,12 +59,16 @@ def main(argv: list[str] | None = None) -> int:
             max_candidate_pairs=args.max_candidate_pairs,
             near_miss_limit=args.near_miss_limit,
         )
-        report = run_pipeline(
-            input_path=Path(args.input),
-            output_dir=Path(args.output),
-            config=config,
-            limit=args.limit,
-        )
+        try:
+            report = run_pipeline(
+                input_path=Path(args.input),
+                output_dir=resolve_run_output_dir(Path(args.output)),
+                config=config,
+                limit=args.limit,
+            )
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
 
@@ -101,6 +106,13 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def resolve_run_output_dir(output_dir: Path) -> Path:
+    run_dir_name = "run_postgres_openai"
+    if output_dir.name == run_dir_name:
+        return output_dir
+    return output_dir / run_dir_name
 
 
 if __name__ == "__main__":

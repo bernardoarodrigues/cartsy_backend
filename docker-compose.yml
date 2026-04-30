@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: cartsy
+      POSTGRES_PASSWORD: cartsy
+      POSTGRES_DB: cartsy_matcher
+    ports:
+      - "5432:5432"
+    volumes:
+      - cartsy_postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cartsy -d cartsy_matcher"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  cartsy_postgres_data:

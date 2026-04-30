@@ -1,6 +1,6 @@
 # Cartsy Product Deduplication Pipeline
 
-This project implements a CLI-first product entity-resolution pipeline for the Cartsy coding challenge. It ingests messy retailer product exports, normalizes product fields, generates duplicate candidates, scores likely matches with explainable confidence, clusters high-confidence matches into `dedupe_id` groups, and writes inspectable output files.
+This project implements a product entity-resolution pipeline for the Cartsy coding challenge. It ingests messy retailer product exports, normalizes product fields, retrieves duplicate candidates through Postgres, reranks them with OpenAI-assisted semantic and structured signals, clusters high-confidence matches into `dedupe_id` groups, and writes inspectable output files.
 
 ## Setup
 
@@ -9,6 +9,13 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m pip install -e .
+cp .env.example .env
+```
+
+Set `OPENAI_API_KEY` in `.env`, then start Postgres with pgvector:
+
+```bash
+docker compose up -d postgres
 ```
 
 Run tests:
@@ -17,12 +24,12 @@ Run tests:
 .venv/bin/python -m pytest -q
 ```
 
-Run the Layer 1 pipeline on the small fixture:
+Run a smoke pipeline:
 
 ```bash
 .venv/bin/cartsy-dedupe run \
   --input data/products_202604290549_first20.csv \
-  --output outputs/run_layer1_first20
+  --output outputs
 ```
 
 Run on the full local CSV:
@@ -30,35 +37,38 @@ Run on the full local CSV:
 ```bash
 .venv/bin/cartsy-dedupe run \
   --input data/products_202604290549.csv \
-  --output outputs/run_full \
+  --output outputs \
   --merge-threshold 0.84 \
   --near-miss-threshold 0.70
 ```
 
+Pipeline runs write to `run_postgres_openai` under the output directory, so `--output outputs` writes artifacts to `outputs/run_postgres_openai`.
+
 The full raw CSV is intentionally ignored by git because it is large.
-
-Query a completed run:
-
-```bash
-.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/sample --limit 5
-.venv/bin/cartsy-dedupe group prod_91032ad7bbcb --run outputs/sample
-.venv/bin/cartsy-dedupe explain 1 2 --run outputs/sample
-```
 
 ## Architecture
 
-The pipeline is organized as layers:
+The pipeline implements the full staged architecture in `info/dedupe_architecture.md`:
 
-- Ingestion reads the CSV and preserves source rows as retailer offers.
-- Normalization cleans text, parses JSON-like `description` and `specs`, extracts identifiers, sizes, model tokens, variant attributes, and quality flags.
-- Blocking creates candidate pairs without comparing every row to every other row.
-- Scoring assigns an explainable confidence score using brand, title, identifiers, model tokens, variant attributes, category, specs/description, and price.
-- Clustering unions accepted duplicate pairs into canonical product groups.
+- Ingestion reads the CSV through DuckDB with all source columns preserved as retailer offers.
+- Normalization cleans text, parses JSON-like `description` and `specs`, and extracts deterministic signals: identifiers, sizes, pack counts, model tokens, and quality flags.
+- Postgres stores normalized products, exact keys, extracted attributes, full-text vectors, trigram indexes, and pgvector embeddings.
+- Exact retrieval joins global identifiers, marketplace IDs, retailer SKU, and canonical URL keys.
+- Lexical retrieval uses Postgres full-text search over weighted brand, title, category, specs, and description text.
+- Fuzzy retrieval uses `pg_trgm` title similarity within normalized brands.
+- Semantic retrieval embeds unresolved product text with OpenAI `text-embedding-3-small` by default and retrieves neighbors with pgvector cosine distance.
+- Attribute extraction uses OpenAI structured outputs with `gpt-5.4-nano` by default for candidate products that need pairwise clarification. Open-ended variant attributes like color, scent, flavor, material, and variant name live here, not in static normalization dictionaries.
+- Scoring combines deterministic rule evidence with exact, FTS, trigram, vector, and LLM attribute signals.
+- Clustering unions accepted duplicate pairs into canonical product groups, with cluster-level guards against conflicting brands, global identifiers, deterministic sizes, and LLM-extracted variant attributes.
 - Reporting writes assignments, group records, near-miss diagnostic pairs, candidate pairs, normalized products, and a summary report.
 
-The dedupe target is the same purchasable variant when variant attributes are clear. Size is a strong signal but not an unconditional blocker: missing or ambiguous size lowers confidence, while clearly incompatible sizes on both records prevent automatic merge.
+Model names are configurable through `.env` because evaluator accounts may expose different OpenAI models:
 
-Layer 3 adds cluster-level safeguards after pair scoring. Even if a pair clears the merge threshold, the union step refuses to connect clusters when the combined group would contain conflicting strong brands, conflicting global identifiers, clearly incompatible sizes, or conflicting clear variant attributes.
+```text
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_EXTRACTION_MODEL=gpt-5.4-nano
+CARTSY_LLM_EXTRACTION_LIMIT=100
+```
 
 ## Outputs
 
@@ -75,12 +85,22 @@ summary_report.json
 
 If `polars` is unavailable, the pipeline falls back to CSV for parquet-style outputs and writes a small fallback marker.
 
+Query a completed run:
+
+```bash
+.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/run_postgres_openai --limit 5
+.venv/bin/cartsy-dedupe group <dedupe_id> --run outputs/run_postgres_openai
+.venv/bin/cartsy-dedupe explain <source_id_a> <source_id_b> --run outputs/run_postgres_openai
+```
+
 ## Deduplication Strategy
 
-The system uses conservative, explainable entity resolution:
+The system uses conservative, explainable entity resolution with staged escalation:
 
-- Strong positive evidence: matching EAN/GTIN/UPC, matching ASIN, same brand plus same title and compatible variant attributes.
-- Strong negative evidence: conflicting strong brands, conflicting global identifiers, incompatible model tokens, clearly incompatible sizes, or clearly different variant attributes.
+- Strong positive evidence: matching EAN/GTIN/UPC, matching ASIN, same brand plus same title and compatible deterministic size/pack signals.
+- Strong negative evidence: conflicting strong brands, conflicting global identifiers, incompatible model tokens, clearly incompatible deterministic sizes, or conflicting LLM-extracted variant attributes.
+- Retrieval evidence: exact keys are strongest, FTS/trigram broaden the candidate set, and pgvector catches semantically similar wording.
+- LLM evidence: structured extraction clarifies ambiguous variant fields and helps distinguish exact duplicate from same parent product line with different variant.
 - Binary decision: a pair merges only when it clears `--merge-threshold` and has no hard contradiction. Pairs below that threshold do not merge.
 - Near-miss diagnostics: pairs above `--near-miss-threshold` but below the merge threshold are written for analysis, not for a required human review workflow.
 
@@ -96,22 +116,12 @@ This favors avoiding false-positive merges, because a bad merge could attach the
 - `near_miss_pairs`: plausible pairs below the merge threshold.
 - `threshold_sensitivity`: how many kept pairs would merge at nearby thresholds.
 - `decision_reason_counts`: top explanation signals for merged and non-merged near-miss pairs.
+- `blocking`: candidate retrieval counts split across exact, FTS, trigram, vector, and OpenAI stages.
 - `clustering`: accepted merge edges and merge edges blocked by the cluster guard.
-
-## Layer 4 Query CLI
-
-The query commands operate only on output artifacts from a completed run:
-
-- `search`: fuzzy-searches `product_assignments.csv`.
-- `group`: prints one `dedupe_id` from `dedupe_groups.jsonl` plus its source offers.
-- `explain`: looks up a scored candidate pair in `candidate_pairs.parquet` and joins source assignment details.
-
-These commands keep the deliverable CLI-first while making the dedupe results easier to inspect during the walkthrough.
 
 ## With More Time
 
-- Add a richer brand alias dictionary from observed variants.
-- Add category taxonomy normalization across Portuguese and English retailer paths.
-- Add calibration/evaluation tooling for near-miss pairs if labeled examples become available.
-- Add embeddings as an additional candidate-generation/scoring feature, while keeping identifiers and variant rules authoritative.
-- Add a live scraper source as a bonus ingestion adapter.
+- Persist embedding and extraction caches across runs instead of rebuilding run tables from scratch.
+- Add source-specific scraper adapters and feed live catalog data into the same Postgres schema.
+- Add labeled-pair calibration and train a small classifier over the current explainable feature vector.
+- Add an optional review UI over `near_miss_pairs.csv`.

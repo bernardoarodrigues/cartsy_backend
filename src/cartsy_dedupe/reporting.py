@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from .schemas import CandidatePair, NormalizedProduct
+from cartsy_dedupe.schemas import CandidatePair, NormalizedProduct
 
 
 def build_summary_report(
@@ -41,7 +41,7 @@ def build_summary_report(
         "largest_groups": largest_groups(clusters),
         "lowest_confidence_accepted_merges": lowest_confidence_groups(clusters),
         "elapsed_seconds": round(elapsed_seconds, 3),
-}
+    }
 
 
 def confidence_distribution(values: list[float]) -> dict[str, int]:

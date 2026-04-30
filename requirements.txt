@@ -1,3 +1,9 @@
+duckdb>=1.1.0
+openai>=1.56.0
+pgvector>=0.3.6
 polars>=0.20.0
+psycopg[binary]>=3.2.0
+pydantic>=2.8.0
+python-dotenv>=1.0.0
 rapidfuzz>=3.6.0
 pytest>=8.0.0

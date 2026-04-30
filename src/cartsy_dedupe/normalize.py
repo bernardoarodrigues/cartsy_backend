@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+from cartsy_dedupe.schemas import NormalizedProduct
+from cartsy_dedupe.text import flatten_jsonish, normalize_brand, normalize_category, normalize_text, parse_jsonish
+
 from .attributes import (
     extract_identifiers,
     extract_model_tokens,
     extract_pack_count,
     extract_size,
-    extract_variant_terms,
     parse_price_cents,
 )
-from .schemas import NormalizedProduct
-from .text import flatten_jsonish, normalize_brand, normalize_category, normalize_text, parse_jsonish
 
 
 def normalize_row(row: dict[str, str]) -> NormalizedProduct:
@@ -37,7 +37,6 @@ def normalize_row(row: dict[str, str]) -> NormalizedProduct:
         if part
     )
     size_value, size_unit, size_ambiguous = extract_size(attribute_text)
-    color, shade, scent = extract_variant_terms(attribute_text)
     pack_count = extract_pack_count(attribute_text)
     model_tokens = extract_model_tokens(attribute_text)
     identifiers = extract_identifiers(source_sku, url, specs_obj, attribute_text)
@@ -75,9 +74,6 @@ def normalize_row(row: dict[str, str]) -> NormalizedProduct:
         size_value=size_value,
         size_unit=size_unit,
         size_ambiguous=size_ambiguous,
-        color=color,
-        shade=shade,
-        scent=scent,
         pack_count=pack_count,
         model_tokens=model_tokens,
         identifiers=identifiers,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 
 
@@ -25,13 +26,11 @@ class NormalizedProduct:
     size_value: float | None
     size_unit: str | None
     size_ambiguous: bool
-    color: str | None
-    shade: str | None
-    scent: str | None
     pack_count: int | None
     model_tokens: tuple[str, ...] = field(default_factory=tuple)
     identifiers: dict[str, str] = field(default_factory=dict)
     quality_flags: tuple[str, ...] = field(default_factory=tuple)
+    extracted_attributes: dict[str, object] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, object]:
         record = asdict(self)
@@ -40,6 +39,7 @@ class NormalizedProduct:
             f"{key}:{value}" for key, value in sorted(self.identifiers.items())
         )
         record["quality_flags"] = "|".join(self.quality_flags)
+        record["extracted_attributes"] = json.dumps(self.extracted_attributes, ensure_ascii=False, sort_keys=True)
         return record
 
 
