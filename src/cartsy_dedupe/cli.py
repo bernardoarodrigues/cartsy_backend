@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
+from .artifact_index import index_artifacts, search_artifacts
 from .config import PipelineConfig
 from .pipeline import run_pipeline
 from .query import explain_pair, get_group, print_table, search_products
@@ -31,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("query", help="Search text.")
     search.add_argument("--run", required=True, help="Run output directory.")
     search.add_argument("--limit", type=int, default=10)
+    search.add_argument(
+        "--backend",
+        choices=["auto", "postgres", "artifacts"],
+        default="auto",
+        help="Search backend. auto tries Postgres/pgvector first and falls back to run artifacts.",
+    )
     search.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
 
     group = subparsers.add_parser("group", help="Show a dedupe group and its source offers.")
@@ -43,6 +51,19 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("source_id_b")
     explain.add_argument("--run", required=True, help="Run output directory.")
     explain.add_argument("--json", action="store_true", help="Print JSON instead of a readable summary.")
+
+    index = subparsers.add_parser("index-artifacts", help="Index completed run artifacts into Postgres/pgvector.")
+    index.add_argument("--run", required=True, help="Run output directory.")
+    index.add_argument("--run-id", default=None, help="Stable run ID for indexed artifacts. Defaults to run directory name.")
+    index.add_argument("--batch-size", type=int, default=128, help="Embedding batch size.")
+    index.add_argument("--no-embeddings", action="store_true", help="Index lexical metadata only, without OpenAI embeddings.")
+
+    artifact_search = subparsers.add_parser("search-artifacts", help="Semantic search across indexed groups, offers, pairs, and summaries.")
+    artifact_search.add_argument("query", help="Search text.")
+    artifact_search.add_argument("--run-id", default=None, help="Optional indexed run ID filter.")
+    artifact_search.add_argument("--type", choices=["group", "offer", "pair", "near_miss", "summary"], default=None)
+    artifact_search.add_argument("--limit", type=int, default=10)
+    artifact_search.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
 
     return parser
 
@@ -73,7 +94,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "search":
-        results = search_products(args.run, args.query, limit=args.limit)
+        try:
+            results = search_products(args.run, args.query, limit=args.limit, backend=args.backend)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         if args.json:
             print(json.dumps(results, indent=2, ensure_ascii=False))
         else:
@@ -104,15 +129,41 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(explanation, indent=2, ensure_ascii=False))
         return 0
 
+    if args.command == "index-artifacts":
+        try:
+            report = index_artifacts(
+                args.run,
+                run_id=args.run_id,
+                batch_size=args.batch_size,
+                embed=not args.no_embeddings,
+            )
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "search-artifacts":
+        try:
+            results = search_artifacts(args.query, run_id=args.run_id, limit=args.limit, artifact_type=args.type)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(results, indent=2, ensure_ascii=False))
+        else:
+            print_table(results, ["score", "run_id", "artifact_type", "artifact_id", "title"])
+        return 0
+
     parser.error(f"Unknown command: {args.command}")
     return 2
 
 
-def resolve_run_output_dir(output_dir: Path) -> Path:
-    run_dir_name = "run_postgres_openai"
-    if output_dir.name == run_dir_name:
+def resolve_run_output_dir(output_dir: Path, *, now: datetime | None = None) -> Path:
+    if output_dir.name.startswith("run_"):
         return output_dir
-    return output_dir / run_dir_name
+    run_id = (now or datetime.now()).strftime("run_%Y%m%d_%H%M%S")
+    return output_dir / run_id
 
 
 if __name__ == "__main__":

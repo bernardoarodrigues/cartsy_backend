@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from cartsy_dedupe.pipeline import (
+    RunMetrics,
     embedding_text,
     extracted_attribute_score,
     postgres_retrieval_features,
@@ -40,3 +41,30 @@ def test_extracted_attributes_detect_same_parent_variant_conflict() -> None:
     assert score < 1.0
     assert relation == "same_parent_different_variant"
     assert "llm_variant_name_conflict" in reasons
+
+
+def test_run_metrics_tracks_openai_usage_and_cost() -> None:
+    metrics = RunMetrics()
+    metrics.add_usage(
+        "gpt-5.4-nano",
+        {
+            "input_tokens": 1_000,
+            "output_tokens": 200,
+            "total_tokens": 1_200,
+            "input_tokens_details": {"cached_tokens": 100},
+        },
+    )
+    report = metrics.as_report(
+        embedding_model="text-embedding-3-small",
+        extraction_model="gpt-5.4-nano",
+        input_records=10,
+        total_elapsed_seconds=5.0,
+    )
+
+    usage = report["openai"]["usage_by_model"]["gpt-5.4-nano"]
+    assert usage["calls"] == 1
+    assert usage["input_tokens"] == 1_000
+    assert usage["cached_input_tokens"] == 100
+    assert usage["output_tokens"] == 200
+    assert usage["estimated_cost_usd"] > 0
+    assert report["timing"]["avg_seconds_per_input_record"] == 0.5

@@ -4,7 +4,8 @@ import json
 import os
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any, TypeVar
@@ -38,6 +39,108 @@ except ImportError:  # pragma: no cover
 T = TypeVar("T")
 PairBlocks = dict[tuple[int, int], set[str]]
 Clusters = dict[str, dict[str, object]]
+
+USD_PER_1M_TOKENS: dict[str, dict[str, float]] = {
+    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+    "text-embedding-3-small": {"input": 0.02},
+}
+
+
+@dataclass
+class StageMetric:
+    elapsed_seconds: float = 0.0
+    items: int = 0
+
+    def as_report(self) -> dict[str, float | int | None]:
+        return {
+            "elapsed_seconds": round(self.elapsed_seconds, 3),
+            "items": self.items,
+            "avg_seconds_per_item": round(self.elapsed_seconds / self.items, 6) if self.items else None,
+        }
+
+
+@dataclass
+class UsageAccumulator:
+    calls: int = 0
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, usage: Any) -> None:
+        if usage is None:
+            return
+        self.calls += 1
+        input_tokens = usage_value(usage, "input_tokens", "prompt_tokens")
+        output_tokens = usage_value(usage, "output_tokens", "completion_tokens")
+        total_tokens = usage_value(usage, "total_tokens")
+        cached_tokens = usage_nested_value(usage, "input_tokens_details", "cached_tokens")
+        self.input_tokens += input_tokens
+        self.cached_input_tokens += cached_tokens
+        self.output_tokens += output_tokens
+        self.total_tokens += total_tokens or input_tokens + output_tokens
+
+    def cost_usd(self, model: str) -> float:
+        prices = USD_PER_1M_TOKENS.get(model, {})
+        billable_input = max(0, self.input_tokens - self.cached_input_tokens)
+        return (
+            billable_input * prices.get("input", 0.0)
+            + self.cached_input_tokens * prices.get("cached_input", prices.get("input", 0.0))
+            + self.output_tokens * prices.get("output", 0.0)
+        ) / 1_000_000
+
+    def as_report(self, model: str) -> dict[str, float | int | str | None]:
+        return {
+            "model": model,
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "estimated_cost_usd": round(self.cost_usd(model), 6),
+            "pricing_note": "Estimated with standard OpenAI prices per 1M tokens configured in pipeline.py.",
+        }
+
+
+@dataclass
+class RunMetrics:
+    stages: dict[str, StageMetric] = field(default_factory=dict)
+    openai_usage: dict[str, UsageAccumulator] = field(default_factory=lambda: defaultdict(UsageAccumulator))
+
+    @contextmanager
+    def stage(self, name: str, *, items: int = 0):
+        started = perf_counter()
+        try:
+            yield
+        finally:
+            metric = self.stages.setdefault(name, StageMetric())
+            metric.elapsed_seconds += perf_counter() - started
+            metric.items += items
+
+    def add_usage(self, model: str, usage: Any) -> None:
+        self.openai_usage[model].add(usage)
+
+    def as_report(self, *, embedding_model: str, extraction_model: str, input_records: int, total_elapsed_seconds: float) -> dict[str, object]:
+        usage_by_model = {
+            model: usage.as_report(model)
+            for model, usage in sorted(self.openai_usage.items())
+        }
+        total_cost = sum(usage.cost_usd(model) for model, usage in self.openai_usage.items())
+        return {
+            "timing": {
+                "total_elapsed_seconds": round(total_elapsed_seconds, 3),
+                "input_records": input_records,
+                "avg_seconds_per_input_record": round(total_elapsed_seconds / input_records, 6) if input_records else None,
+                "stages": {name: metric.as_report() for name, metric in self.stages.items()},
+            },
+            "openai": {
+                "embedding_model": embedding_model,
+                "extraction_model": extraction_model,
+                "usage_by_model": usage_by_model,
+                "total_estimated_cost_usd": round(total_cost, 6),
+                "cost_source": "OpenAI standard pricing checked 2026-04-30; update USD_PER_1M_TOKENS if model prices change.",
+            },
+        }
 
 
 class ExtractedAttributes(BaseModel):
@@ -76,6 +179,7 @@ class PostgresOpenAIPipeline:
         self.extracted_by_source_id: dict[str, dict[str, Any]] = {}
         self.embedding_count = 0
         self.extraction_count = 0
+        self.metrics = RunMetrics()
 
     def normalize_rows(self, rows: Iterable[dict[str, str]]) -> list[NormalizedProduct]:
         products: list[NormalizedProduct] = []
@@ -378,6 +482,7 @@ class PostgresOpenAIPipeline:
             ],
             text_format=ExtractedAttributes,
         )
+        self.metrics.add_usage(self.extraction_model, getattr(response, "usage", None))
         parsed = response.output_parsed
         if parsed is None:
             return {}
@@ -429,6 +534,7 @@ class PostgresOpenAIPipeline:
                 for row in batch
             ]
             response = client.embeddings.create(model=self.embedding_model, input=texts)
+            self.metrics.add_usage(self.embedding_model, getattr(response, "usage", None))
             updates = [(item.embedding, row[0]) for item, row in zip(response.data, batch, strict=True)]
             with conn.cursor() as cur:
                 cur.executemany("UPDATE cartsy_products SET embedding = %s WHERE source_id = %s", updates)
@@ -641,6 +747,25 @@ def batched(items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
         yield items[index : index + size]
 
 
+def usage_value(usage: Any, *names: str) -> int:
+    for name in names:
+        if isinstance(usage, dict):
+            value = usage.get(name)
+        else:
+            value = getattr(usage, name, None)
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def usage_nested_value(usage: Any, parent_name: str, child_name: str) -> int:
+    parent = usage.get(parent_name) if isinstance(usage, dict) else getattr(usage, parent_name, None)
+    if parent is None:
+        return 0
+    value = parent.get(child_name) if isinstance(parent, dict) else getattr(parent, child_name, None)
+    return int(value or 0)
+
+
 def exact_candidate_sql() -> str:
     return """
         SELECT LEAST(a.product_index, b.product_index) AS left_index,
@@ -800,23 +925,29 @@ def run_pipeline(
     dedupe_pipeline = PostgresOpenAIPipeline()
 
     print(f"loading {input_path}")
-    rows = load_rows(input_path, limit=limit)
+    with dedupe_pipeline.metrics.stage("load_rows"):
+        rows = load_rows(input_path, limit=limit)
     print(f"loaded {len(rows):,} rows")
 
     print("normalizing and loading Postgres")
-    products = dedupe_pipeline.normalize_rows(rows)
+    with dedupe_pipeline.metrics.stage("normalize_and_load_postgres", items=len(rows)):
+        products = dedupe_pipeline.normalize_rows(rows)
     print(f"normalized {len(products):,} products")
     id_to_index = {product.source_id: index for index, product in enumerate(products)}
 
     print("retrieving candidate pairs")
-    pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(products, config=config)
+    with dedupe_pipeline.metrics.stage("retrieve_candidates", items=len(products)):
+        pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(products, config=config)
     print(f"generated {len(pair_blocks):,} candidate pairs")
 
     print("scoring candidate pairs")
-    candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(products, pair_blocks, config=config)
+    with dedupe_pipeline.metrics.stage("score_candidates", items=len(pair_blocks)):
+        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(products, pair_blocks, config=config)
 
-    clusters, cluster_stats = dedupe_pipeline.build_clusters(products, candidate_pairs, id_to_index)
-    source_to_cluster = invert_clusters(clusters)
+    with dedupe_pipeline.metrics.stage("cluster", items=len(candidate_pairs)):
+        clusters, cluster_stats = dedupe_pipeline.build_clusters(products, candidate_pairs, id_to_index)
+        source_to_cluster = invert_clusters(clusters)
+    elapsed_seconds = perf_counter() - started
     report = dedupe_pipeline.build_summary_report(
         products=products,
         candidate_pairs=candidate_pairs,
@@ -824,18 +955,36 @@ def run_pipeline(
         blocking_stats=blocking_stats,
         cluster_stats=cluster_stats,
         scored_candidate_pairs=scored_candidate_pairs,
-        elapsed_seconds=perf_counter() - started,
+        elapsed_seconds=elapsed_seconds,
     )
-    write_outputs(
-        output_path=output_path,
-        products=products,
-        candidate_pairs=candidate_pairs,
-        clusters=clusters,
-        source_to_cluster=source_to_cluster,
-        report=report,
-        near_miss_limit=config.near_miss_limit,
-        sample_pair_limit=config.sample_pair_limit,
+    report["run_id"] = output_path.name
+    report["run_output_dir"] = str(output_path)
+    report["metrics"] = dedupe_pipeline.metrics.as_report(
+        embedding_model=dedupe_pipeline.embedding_model,
+        extraction_model=dedupe_pipeline.extraction_model,
+        input_records=len(products),
+        total_elapsed_seconds=elapsed_seconds,
     )
+    with dedupe_pipeline.metrics.stage("write_outputs", items=len(products)):
+        write_outputs(
+            output_path=output_path,
+            products=products,
+            candidate_pairs=candidate_pairs,
+            clusters=clusters,
+            source_to_cluster=source_to_cluster,
+            report=report,
+            near_miss_limit=config.near_miss_limit,
+            sample_pair_limit=config.sample_pair_limit,
+        )
+    elapsed_seconds = perf_counter() - started
+    report["elapsed_seconds"] = round(elapsed_seconds, 3)
+    report["metrics"] = dedupe_pipeline.metrics.as_report(
+        embedding_model=dedupe_pipeline.embedding_model,
+        extraction_model=dedupe_pipeline.extraction_model,
+        input_records=len(products),
+        total_elapsed_seconds=elapsed_seconds,
+    )
+    (output_path / "summary_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return report
 
 

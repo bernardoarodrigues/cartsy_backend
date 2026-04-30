@@ -42,7 +42,7 @@ Run on the full local CSV:
   --near-miss-threshold 0.70
 ```
 
-Pipeline runs write to `run_postgres_openai` under the output directory, so `--output outputs` writes artifacts to `outputs/run_postgres_openai`.
+Pipeline runs write to a timestamped run directory under the output directory, so `--output outputs` writes artifacts to a path like `outputs/run_20260430_150405`. The generated `run_id` and full output path are also recorded in `summary_report.json`.
 
 The full raw CSV is intentionally ignored by git because it is large.
 
@@ -83,15 +83,24 @@ near_miss_pairs.csv
 summary_report.json
 ```
 
+`summary_report.json` includes runtime and OpenAI accounting metadata under `metrics`: total elapsed time, average seconds per input record, per-stage timing averages, token usage by model, and estimated OpenAI cost in USD.
+
 If `polars` is unavailable, the pipeline falls back to CSV for parquet-style outputs and writes a small fallback marker.
 
 Query a completed run:
 
 ```bash
-.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/run_postgres_openai --limit 5
-.venv/bin/cartsy-dedupe group <dedupe_id> --run outputs/run_postgres_openai
-.venv/bin/cartsy-dedupe explain <source_id_a> <source_id_b> --run outputs/run_postgres_openai
+.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/run_20260430_150405 --limit 5
+.venv/bin/cartsy-dedupe search "cetaphil moisturizing lotion" --run outputs/run_20260430_150405 --backend postgres --limit 5
+.venv/bin/cartsy-dedupe index-artifacts --run outputs/run_20260430_150405
+.venv/bin/cartsy-dedupe search-artifacts "similar maybelline matte lipstick but different shade" --run-id run_20260430_150405 --type near_miss --limit 5
+.venv/bin/cartsy-dedupe group <dedupe_id> --run outputs/run_20260430_150405
+.venv/bin/cartsy-dedupe explain <source_id_a> <source_id_b> --run outputs/run_20260430_150405
 ```
+
+Search defaults to `--backend auto`: it tries the live Postgres tables first, using exact name/SKU checks, weighted full-text search, pg_trgm title similarity, and pgvector cosine search when `OPENAI_API_KEY` is available for the query embedding. If Postgres is not running, it falls back to the exported `product_assignments.csv` fuzzy search so saved run artifacts remain portable.
+
+`index-artifacts` builds a separate Postgres/pgvector index over completed-run artifacts without replacing the file artifacts as source of truth. It creates searchable documents for dedupe groups, source offers, merge/near-miss pair evidence, and the run summary. `search-artifacts` can then retrieve graph-aware results with metadata links like `group:<dedupe_id>`, `offer:<source_id>`, and pair endpoints. Use `--no-embeddings` for lexical-only indexing; with `OPENAI_API_KEY`, both indexing and queries include semantic vectors.
 
 ## Deduplication Strategy
 
@@ -118,6 +127,7 @@ This favors avoiding false-positive merges, because a bad merge could attach the
 - `decision_reason_counts`: top explanation signals for merged and non-merged near-miss pairs.
 - `blocking`: candidate retrieval counts split across exact, FTS, trigram, vector, and OpenAI stages.
 - `clustering`: accepted merge edges and merge edges blocked by the cluster guard.
+- `metrics`: end-to-end runtime, average time per input record, stage timings, OpenAI token usage, and estimated costs.
 
 ## With More Time
 

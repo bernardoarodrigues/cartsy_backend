@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
+import cartsy_dedupe.query as query_module
 from cartsy_dedupe.query import explain_pair, get_group, search_products
 
 
@@ -84,6 +86,52 @@ def test_search_products_returns_best_matches(tmp_path: Path) -> None:
     results = search_products(run_dir, "cetaphil hidratante", limit=1)
     assert results[0]["dedupe_id"] == "prod_abc"
     assert results[0]["score"] > 0.7
+
+
+def test_search_products_uses_postgres_backend_when_available(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = make_run_dir(tmp_path)
+
+    def fake_postgres_search(run_dir: str | Path, query: str, *, limit: int) -> list[dict[str, object]]:
+        return [
+            {
+                "score": 0.98,
+                "source_id": "db-1",
+                "dedupe_id": "prod_db",
+                "retailer": "postgres",
+                "brand": "Cetaphil",
+                "price_cents": "1",
+                "name": "Cetaphil moisturizing lotion",
+            }
+        ]
+
+    monkeypatch.setattr(query_module, "search_products_postgres", fake_postgres_search)
+    results = search_products(run_dir, "cetaphil moisturizer", limit=1)
+
+    assert results[0]["source_id"] == "db-1"
+
+
+def test_search_products_auto_falls_back_to_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = make_run_dir(tmp_path)
+
+    def unavailable_postgres_search(run_dir: str | Path, query: str, *, limit: int) -> list[dict[str, object]]:
+        raise RuntimeError("postgres unavailable")
+
+    monkeypatch.setattr(query_module, "search_products_postgres", unavailable_postgres_search)
+    results = search_products(run_dir, "cetaphil hidratante", limit=1)
+
+    assert results[0]["dedupe_id"] == "prod_abc"
+
+
+def test_search_products_postgres_backend_surfaces_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = make_run_dir(tmp_path)
+
+    def unavailable_postgres_search(run_dir: str | Path, query: str, *, limit: int) -> list[dict[str, object]]:
+        raise RuntimeError("postgres unavailable")
+
+    monkeypatch.setattr(query_module, "search_products_postgres", unavailable_postgres_search)
+
+    with pytest.raises(RuntimeError, match="postgres unavailable"):
+        search_products(run_dir, "cetaphil hidratante", limit=1, backend="postgres")
 
 
 def test_get_group_includes_offers(tmp_path: Path) -> None:

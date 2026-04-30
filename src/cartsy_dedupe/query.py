@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 
 from .text import normalize_text
@@ -19,7 +20,28 @@ except ImportError:  # pragma: no cover - dependency is installed in the project
     fuzz = _FallbackFuzz()
 
 
-def search_products(run_dir: str | Path, query: str, *, limit: int = 10) -> list[dict[str, object]]:
+def search_products(
+    run_dir: str | Path,
+    query: str,
+    *,
+    limit: int = 10,
+    backend: str = "auto",
+) -> list[dict[str, object]]:
+    if backend not in {"auto", "artifacts", "postgres"}:
+        raise ValueError("backend must be one of: auto, artifacts, postgres")
+    if backend in {"auto", "postgres"}:
+        try:
+            postgres_results = search_products_postgres(run_dir, query, limit=limit)
+        except RuntimeError:
+            if backend == "postgres":
+                raise
+        else:
+            if postgres_results or backend == "postgres":
+                return postgres_results
+    return search_products_artifacts(run_dir, query, limit=limit)
+
+
+def search_products_artifacts(run_dir: str | Path, query: str, *, limit: int = 10) -> list[dict[str, object]]:
     query_norm = normalize_text(query)
     rows = read_assignments(run_dir)
     scored: list[tuple[float, dict[str, str]]] = []
@@ -55,6 +77,136 @@ def search_products(run_dir: str | Path, query: str, *, limit: int = 10) -> list
         }
         for score, row in results
     ]
+
+
+def search_products_postgres(run_dir: str | Path, query: str, *, limit: int = 10) -> list[dict[str, object]]:
+    try:
+        import psycopg
+    except ImportError as exc:  # pragma: no cover - dependency is installed in the project venv.
+        raise RuntimeError("Install psycopg[binary] before using the postgres search backend.") from exc
+
+    query_norm = normalize_text(query)
+    if not query_norm:
+        return []
+
+    database_url = os.getenv("DATABASE_URL", "postgresql://cartsy:cartsy@localhost:5432/cartsy_matcher")
+    assignments = {row["source_id"]: row for row in read_assignments(run_dir)}
+    try:
+        with psycopg.connect(database_url) as conn:
+            register_pgvector(conn)
+            query_embedding = make_query_embedding(query)
+            with conn.cursor() as cur:
+                params: list[object] = [query_norm] * 16
+                if query_embedding is None:
+                    cur.execute(postgres_search_sql(include_vector=False), (*params, limit))
+                else:
+                    cur.execute(postgres_search_sql(include_vector=True), (*params[:11], query_embedding, *params[11:], limit))
+                rows = cur.fetchall()
+    except Exception as exc:  # pragma: no cover - depends on local service state.
+        raise RuntimeError("Could not search Postgres. Start `docker compose up -d postgres` or use --backend artifacts.") from exc
+
+    results: list[dict[str, object]] = []
+    for row in rows:
+        source_id, retailer, brand, name, price_cents, score, evidence = row
+        assignment = assignments.get(source_id, {})
+        results.append(
+            {
+                "score": round(float(score or 0.0), 4),
+                "source_id": source_id,
+                "dedupe_id": assignment.get("dedupe_id", ""),
+                "retailer": assignment.get("retailer", retailer),
+                "name": assignment.get("name_raw", name),
+                "brand": assignment.get("brand_raw", brand),
+                "price_cents": assignment.get("price_cents", price_cents),
+                "cluster_confidence": assignment.get("cluster_confidence", ""),
+                "decision": assignment.get("decision", ""),
+                "search_backend": "postgres",
+                "retrieval_evidence": [item for item in evidence if item],
+            }
+        )
+    return results
+
+
+def make_query_embedding(query: str) -> list[float] | None:
+    if not os.getenv("OPENAI_API_KEY"):
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:  # pragma: no cover - dependency is installed in the project venv.
+        return None
+    model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    client = OpenAI()
+    try:
+        response = client.embeddings.create(model=model, input=[f"title: {query}"])
+    except Exception:
+        return None
+    return list(response.data[0].embedding)
+
+
+def register_pgvector(conn: object) -> None:
+    try:
+        from pgvector.psycopg import register_vector
+    except ImportError:  # pragma: no cover - only needed for vector parameter adaptation.
+        return
+    register_vector(conn)
+
+
+def postgres_search_sql(*, include_vector: bool) -> str:
+    vector_select = ", 1 - (embedding <=> %s) AS vector_score" if include_vector else ", 0.0::double precision AS vector_score"
+    vector_filter = "OR embedding IS NOT NULL" if include_vector else ""
+    vector_evidence = (
+        "CASE WHEN vector_score >= 0.78 THEN 'vector:cosine:' || round(vector_score::numeric, 4)::text END,"
+        if include_vector
+        else ""
+    )
+    return f"""
+        WITH scored AS (
+            SELECT source_id,
+                   retailer,
+                   brand_raw,
+                   name_raw,
+                   price_cents,
+                   CASE
+                       WHEN name_norm = %s OR source_sku = %s THEN 1.0
+                       WHEN %s <> '' AND (
+                           position(%s in name_norm) > 0
+                           OR position(%s in search_text) > 0
+                           OR position(%s in brand_norm) > 0
+                       ) THEN 0.99
+                       ELSE 0.0
+                   END AS exact_score,
+                   CASE
+                       WHEN %s <> '' AND search_vector @@ plainto_tsquery('simple', %s)
+                       THEN LEAST(1.0, ts_rank_cd(search_vector, plainto_tsquery('simple', %s)) * 1.4)
+                       ELSE 0.0
+                   END AS fts_score,
+                   GREATEST(similarity(name_norm, %s), similarity(search_text, %s)) AS trigram_score
+                   {vector_select}
+            FROM cartsy_products
+            WHERE name_norm % %s
+               OR search_text % %s
+               OR search_vector @@ plainto_tsquery('simple', %s)
+               OR name_norm = %s
+               OR source_sku = %s
+               {vector_filter}
+        )
+        SELECT source_id,
+               retailer,
+               brand_raw,
+               name_raw,
+               price_cents,
+               GREATEST(exact_score, fts_score, trigram_score, vector_score) AS score,
+               ARRAY_REMOVE(ARRAY[
+                   CASE WHEN exact_score >= 0.99 THEN 'exact:name_or_sku' END,
+                   CASE WHEN fts_score > 0 THEN 'lexical:fts:' || round(fts_score::numeric, 4)::text END,
+                   CASE WHEN trigram_score >= 0.30 THEN 'trigram:title:' || round(trigram_score::numeric, 4)::text END,
+                   {vector_evidence}
+                   'backend:postgres'
+               ], NULL) AS evidence
+        FROM scored
+        ORDER BY score DESC, name_raw ASC
+        LIMIT %s
+    """
 
 
 def get_group(run_dir: str | Path, dedupe_id: str) -> dict[str, object]:
