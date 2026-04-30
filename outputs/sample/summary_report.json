@@ -1,0 +1,236 @@
+{
+  "input_records": 5000,
+  "normalized_records": 5000,
+  "candidate_pairs_generated": 536,
+  "auto_merged_pairs": 9,
+  "review_pairs": 527,
+  "final_unique_products": 4993,
+  "grouped_records": 12,
+  "duplicate_records_grouped": 7,
+  "reduction_ratio": 0.0014,
+  "confidence_distribution": {
+    "0.95-1.00": 0,
+    "0.90-0.95": 0,
+    "0.86-0.90": 9,
+    "0.70-0.86": 527,
+    "<0.70": 0
+  },
+  "top_quality_flags": {
+    "missing_description": 1123,
+    "generic_brand": 549,
+    "missing_price": 333,
+    "missing_identifier": 285,
+    "missing_category": 193,
+    "missing_specs": 190,
+    "missing_brand": 1
+  },
+  "blocking": {
+    "blocking_keys": 31699,
+    "skipped_blocks": 0,
+    "oversized_block_rows": 0,
+    "candidate_cap_reached": 0
+  },
+  "largest_groups": [
+    {
+      "dedupe_id": "prod_a595a62d38eb",
+      "canonical_name": "Bruna Facial Energizante Flor De Gengibre Natura 100 Ml Normal",
+      "num_offers": 3,
+      "retailers": [
+        "mercadolivre"
+      ],
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "67070",
+        "67076",
+        "67079"
+      ]
+    },
+    {
+      "dedupe_id": "prod_e371319c8d56",
+      "canonical_name": "Natura Faces Bruma Facial Spray Hidratante 100ml Todo Tipo De Pele Dia/noite",
+      "num_offers": 3,
+      "retailers": [
+        "mercadolivre"
+      ],
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "67074",
+        "67081",
+        "67088"
+      ]
+    },
+    {
+      "dedupe_id": "prod_b0b1b69f6749",
+      "canonical_name": "Escova Secadora Alisadora Revlon Volumizer Plus 127v",
+      "num_offers": 2,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "1013",
+        "999"
+      ]
+    },
+    {
+      "dedupe_id": "prod_6712fef7df0c",
+      "canonical_name": "Kit de Manicure e Pedicure, 100 Mini Lixas de Unha, 100 Palitos para Unha, Descartáveis (Lixa parda)",
+      "num_offers": 2,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "1427",
+        "1436"
+      ]
+    },
+    {
+      "dedupe_id": "prod_a9f90cafcb53",
+      "canonical_name": "Body Splash Energizante Desodorante Colônia Natura Tododia Flor De Gengibre E Tangerina 200ml",
+      "num_offers": 2,
+      "retailers": [
+        "mercadolivre"
+      ],
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "67075",
+        "67083"
+      ]
+    },
+    {
+      "dedupe_id": "prod_356a192b7913",
+      "canonical_name": "La Roche-Posay Cicaplast Baume B5+ Cuidado Multirreparador Calmante",
+      "num_offers": 1,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 1.0,
+      "source_ids": [
+        "1"
+      ]
+    },
+    {
+      "dedupe_id": "prod_da4b9237bacc",
+      "canonical_name": "Óleo Wella Professionals Ultimate Luxe Oil 30ml",
+      "num_offers": 1,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 1.0,
+      "source_ids": [
+        "2"
+      ]
+    },
+    {
+      "dedupe_id": "prod_77de68daecd8",
+      "canonical_name": "Máscara Wella Invigo Nutri-Enrich 150ml",
+      "num_offers": 1,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 1.0,
+      "source_ids": [
+        "3"
+      ]
+    },
+    {
+      "dedupe_id": "prod_1b6453892473",
+      "canonical_name": "Melano CC® Sérum Essence - Sérum de Vitamina C Pura para Ação Antioxidante Que Clareia A Pele E Controla A Oleosidade 20G",
+      "num_offers": 1,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 1.0,
+      "source_ids": [
+        "4"
+      ]
+    },
+    {
+      "dedupe_id": "prod_ac3478d69a3c",
+      "canonical_name": "CeraVe, Loção Hidratante Corporal, com textura Fluida e Ácido Hialurônico",
+      "num_offers": 1,
+      "retailers": [
+        "amazon_br"
+      ],
+      "cluster_confidence": 1.0,
+      "source_ids": [
+        "5"
+      ]
+    }
+  ],
+  "lowest_confidence_accepted_merges": [
+    {
+      "dedupe_id": "prod_b0b1b69f6749",
+      "canonical_name": "Escova Secadora Alisadora Revlon Volumizer Plus 127v",
+      "num_offers": 2,
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "1013",
+        "999"
+      ],
+      "merge_reasons": [
+        "brand_match:revlon; title_high:0.96; model_match:rvdr5298; size_match:790g; color_match:preto; shade_match:preto; pack_match:2; category_exact; price_close"
+      ]
+    },
+    {
+      "dedupe_id": "prod_6712fef7df0c",
+      "canonical_name": "Kit de Manicure e Pedicure, 100 Mini Lixas de Unha, 100 Palitos para Unha, Descartáveis (Lixa parda)",
+      "num_offers": 2,
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "1427",
+        "1436"
+      ],
+      "merge_reasons": [
+        "brand_match:pura arte; title_high:0.97; model_match:5cm,8cm; size_match:185g; shade_match:amarelo; pack_match:8; category_exact; price_close"
+      ]
+    },
+    {
+      "dedupe_id": "prod_a595a62d38eb",
+      "canonical_name": "Bruna Facial Energizante Flor De Gengibre Natura 100 Ml Normal",
+      "num_offers": 3,
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "67070",
+        "67076",
+        "67079"
+      ],
+      "merge_reasons": [
+        "brand_match:natura; title_high:1.00; size_match:100ml",
+        "brand_match:natura; title_high:1.00; size_match:100ml; price_close",
+        "brand_match:natura; title_high:1.00; size_match:100ml"
+      ]
+    },
+    {
+      "dedupe_id": "prod_e371319c8d56",
+      "canonical_name": "Natura Faces Bruma Facial Spray Hidratante 100ml Todo Tipo De Pele Dia/noite",
+      "num_offers": 3,
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "67074",
+        "67081",
+        "67088"
+      ],
+      "merge_reasons": [
+        "brand_match:natura; title_high:1.00; size_match:100ml",
+        "brand_match:natura; title_high:1.00; size_match:100ml; price_close",
+        "brand_match:natura; title_high:1.00; size_match:100ml"
+      ]
+    },
+    {
+      "dedupe_id": "prod_a9f90cafcb53",
+      "canonical_name": "Body Splash Energizante Desodorante Colônia Natura Tododia Flor De Gengibre E Tangerina 200ml",
+      "num_offers": 2,
+      "cluster_confidence": 0.88,
+      "source_ids": [
+        "67075",
+        "67083"
+      ],
+      "merge_reasons": [
+        "brand_match:natura; title_high:1.00; size_match:200ml"
+      ]
+    }
+  ],
+  "elapsed_seconds": 3.091
+}

@@ -1,0 +1,47 @@
+O desafio consiste em criar um sistema para deduplicação de produtos vindos de múltiplas fontes. Hoje, a empresa utiliza vários scrapers para coletar dados de retailers como Amazon, Mercado Livre, Sephora, Walmart, Beleza na Web e outros. Esses dados são trazidos para dentro da base, enriquecidos, deduplicados e transformados em embeddings para que o shopping agent consiga pesquisar produtos a partir de informações extraídas de mídias como vídeos, stories, posts, TikToks e reels.
+
+A ideia geral é construir algo parecido com o X-Ray do Amazon Prime Video, mas aplicado a shopping. A partir de uma mídia, o sistema deve conseguir identificar possíveis produtos relacionados e conectá-los a opções reais de compra. Para isso, é necessário normalizar dados de produto vindos de fontes diferentes, deduplicar registros e gerar uma forma clara de consultar ou analisar os resultados.
+
+O input principal será um CSV exportado da base de produtos, contendo cerca de 300 mil SKUs. Esses produtos podem vir de diferentes fontes, mas o schema já estará parcialmente normalizado. O arquivo contém campos como nome do produto, marca, categoria, descrição, specs, data de criação, retailer de origem, preço em centavos, SKU, dimensão ou tamanho do produto, URL e possivelmente imagens.
+
+O objetivo principal é criar um ID único que agrupe produtos equivalentes. Por exemplo, um mesmo hidratante da Cetaphil pode estar listado na Amazon, Sephora, Walmart ou Mercado Livre, com nomes, descrições, preços e SKUs diferentes. O sistema precisa identificar que esses registros representam o mesmo produto ou variações muito próximas do mesmo produto.
+
+Alguns casos serão simples, como produtos com mesmo nome, mesma marca, mesmo preço ou mesmo SKU. Outros serão mais difíceis, porque o nome pode variar entre retailers, o SKU pode estar ausente, a descrição pode ser diferente ou o SKU pode representar uma variação, como cor ou tamanho. Um exemplo citado foi o Sony WH-1000XM5, em que o mesmo produto pode aparecer com nomes ou descrições diferentes.
+
+A deduplicação não precisa ser tratada como uma ciência exata. O ideal é criar uma estratégia que gere um score de confiança indicando o quanto o sistema acredita que dois ou mais produtos representam o mesmo item. Esse score deve considerar diferenças de nome, marca, categoria, descrição, specs, preço, SKU, dimensão, retailer e outras informações disponíveis.
+
+A parte de ingestion pode ser simples: carregar o CSV e processar os dados. A normalização também fica aberta. Caso a estrutura entregue no CSV não pareça ideal, é permitido reorganizar os dados de outra forma para facilitar a deduplicação. Há liberdade para escolher a abordagem, desde que o resultado final seja útil e fácil de analisar.
+
+A query interface foi inicialmente mencionada como obrigatória, mas na prática é opcional. Não é necessário construir uma API completa. Se o resultado final for um CSV, JSON, tabela ou banco com os IDs deduplicados e os scores de confiança, isso já é suficiente. Uma API simples ou interface mínima pode ser feita se ajudar, mas não é prioridade.
+
+A parte de observabilidade pode ser simples, com logs e relatórios básicos. O relatório deve mostrar informações como número total de registros processados, número de produtos únicos, quantidade de duplicatas encontradas, score mínimo, score máximo e distribuição dos scores de confiança. Isso ajudará tanto na avaliação do resultado quanto no entendimento do raciocínio técnico usado na solução.
+
+Como bônus, seria interessante criar um scraper que busque informações reais de produtos de uma fonte externa ou de uma fonte já presente no CSV. Isso permitiria testar a engine não apenas na deduplicação do dataset fornecido, mas também na busca de produtos parecidos em novas fontes. Esse ponto é extra credit e não é o foco principal.
+
+Os entregáveis esperados são um repositório no GitHub ou um arquivo zip com o código, junto com uma explicação da arquitetura, da estratégia usada e do que poderia ser melhorado com mais tempo. Como o desafio deve ser feito em poucos dias, é importante explicar o que foi possível construir no prazo e quais melhorias seriam feitas em um cenário com mais um, dois ou três meses de trabalho.
+
+Também é esperado um sample output, como uma tabela ou CSV contendo os produtos com seus IDs deduplicados e scores de confiança, além de um summary report com os principais números e distribuições. O objetivo é permitir que a equipe filtre e analise grupos de produtos para verificar se os itens agrupados realmente fazem sentido.
+
+Os critérios de avaliação são: se a solução funciona, se cobre bem o problema, se a qualidade do código é boa o suficiente, se as decisões técnicas fazem sentido e se a comunicação é clara. A lógica e o raciocínio técnico são mais importantes do que polimento excessivo no código ou interface visual.
+
+A escolha de linguagem, framework e ferramentas é livre. O stack interno da empresa é mais voltado para TypeScript, Next.js e Node.js, mas o desafio pode ser feito em qualquer linguagem ou framework. Se houver interface, ela pode ser extremamente simples. Também não é necessário escrever testes, evals ou uma UI sofisticada. O foco deve estar no output e na estratégia de deduplicação.
+
+O prazo combinado foi até o final de domingo, cerca de três a quatro dias. O uso de ferramentas de IA é permitido e incentivado. A empresa espera que candidatos usem essas ferramentas da mesma forma que o time usa no dia a dia.
+
+Para comunicação durante o desafio, será criado um grupo de WhatsApp com Bernardo, o cofundador e Daniel. Se surgirem dúvidas, ambiguidades ou problemas, Bernardo poderá mandar mensagem no grupo, e a equipe responderá ou marcará uma call rápida.
+
+Quando o desafio estiver pronto, será marcada uma call de 30 a 45 minutos para revisar o output, discutir a estratégia adotada e conversar sobre próximos passos.
+
+Bernardo perguntou se poderia assumir que todos os itens do CSV teriam o formato mínimo necessário ou se precisaria lidar com inputs incorretos. A resposta foi que o CSV já estará relativamente limpo e organizado. Todos os produtos devem ter ID, nome, marca, URL, retailer, preço e SKU. No entanto, alguns campos como categoria, descrição e specs podem estar ausentes em certos produtos. Esses são os principais edge cases esperados.
+
+Também foi perguntado se a solução deveria usar imagens de forma multimodal ou focar em texto, descrição e specs. A resposta foi que isso depende da estratégia. Se a deduplicação funcionar bem com as informações textuais, não é necessário usar imagens. Mas, se o texto não for suficiente, as imagens podem ser usadas como apoio. A equipe já considera o uso de imagens uma possibilidade relevante.
+
+As descrições e specs vêm em JSONs, mas não são padronizadas. A estrutura depende da informação disponível para cada produto e pode variar bastante entre fontes, inclusive dentro do mesmo retailer. Algumas specs são enriquecidas a partir de imagem, descrição ou reviews de clientes. Esses dados podem ser bastante úteis para a deduplicação, embora também possam conter ruído ou inconsistências vindas dos scrapers.
+
+A equipe já possui uma espécie de answer key interno, com IDs de deduplicação próprios, mas espera que a solução proposta possa ser igual ou melhor do que a abordagem atual. Como o problema é complexo e tem valor real para a empresa, o mais importante é demonstrar uma boa abordagem, boas decisões técnicas e uma forma clara de analisar os resultados.
+
+Bernardo confirmou o entendimento: receber o CSV como input, executar a deduplicação, gerar IDs agrupando produtos equivalentes e produzir um output que permita verificar quais produtos foram considerados iguais. A query pode retornar grupos de produtos por nome ou ID, mas isso não é obrigatório. O essencial é entregar uma tabela ou arquivo em que seja possível filtrar pelos IDs deduplicados e avaliar a qualidade dos agrupamentos.
+
+O desafio deve gerar insumos para a equipe entender onde a solução performa bem, onde pode melhorar e como as decisões técnicas impactam o score e o output. A partir disso, a equipe também poderá avaliar quais tipos de problemas combinam melhor com o perfil do candidato.
+
+Ao final, ficou combinado que o arquivo seria compartilhado via Google Drive e que Bernardo começaria analisando o CSV. Caso surgissem dúvidas, ele entraria em contato pelo grupo de WhatsApp. A equipe demonstrou interesse em ver o resultado, comentou que o desafio ainda é novo e pediu também feedback sobre a própria formulação do challenge.
