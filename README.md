@@ -62,7 +62,7 @@ The full raw CSV is intentionally ignored by git because it is large.
 
 The pipeline implements the full staged architecture in `info/dedupe_architecture.md`:
 
-- Ingestion reads the CSV through DuckDB with all source columns preserved as retailer offers.
+- Ingestion reads the CSV through Polars with all source columns preserved as retailer offers.
 - Normalization cleans text, parses JSON-like `description` and `specs`, and extracts deterministic signals: identifiers, sizes, pack counts, model tokens, and quality flags.
 - Postgres stores normalized products, exact keys, extracted attributes, full-text vectors, trigram indexes, and pgvector embeddings.
 - Exact retrieval joins global identifiers, marketplace IDs, retailer SKU, and canonical URL keys.

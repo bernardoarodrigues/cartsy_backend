@@ -5,9 +5,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 try:
-    import duckdb
+    import polars as pl
 except ImportError:  # pragma: no cover - fallback for minimal environments.
-    duckdb = None
+    pl = None
 
 
 def iter_csv_rows(path: str | Path, *, limit: int | None = None) -> Iterator[dict[str, str]]:
@@ -20,18 +20,19 @@ def iter_csv_rows(path: str | Path, *, limit: int | None = None) -> Iterator[dic
 
 
 def load_rows(path: str | Path, limit: int | None = None) -> list[dict[str, str]]:
-    if duckdb is None:
+    if pl is None:
         return list(iter_csv_rows(path, limit=limit))
 
-    query = "SELECT * FROM read_csv_auto(?, header = true, all_varchar = true)"
-    params: list[object] = [str(path)]
+    frame = pl.read_csv(
+        str(path),
+        infer_schema_length=0,
+        null_values=[],
+        truncate_ragged_lines=True,
+    )
     if limit is not None:
-        query += " LIMIT ?"
-        params.append(limit)
-
-    with duckdb.connect(database=":memory:") as conn:
-        rows = conn.execute(query, params).fetchall()
-        columns = [column[0] for column in conn.description]
+        frame = frame.head(limit)
+    columns = frame.columns
+    rows = frame.iter_rows()
     return [
         {column: "" if value is None else str(value) for column, value in zip(columns, row, strict=True)}
         for row in rows
