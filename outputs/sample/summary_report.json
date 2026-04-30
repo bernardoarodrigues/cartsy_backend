@@ -2,19 +2,19 @@
   "input_records": 5000,
   "normalized_records": 5000,
   "candidate_pairs_scored": 7196,
-  "candidate_pairs_kept": 536,
+  "candidate_pairs_kept": 510,
   "merged_pairs": 9,
-  "near_miss_pairs": 527,
+  "near_miss_pairs": 501,
   "threshold_sensitivity": {
     "0.90": 0,
     "0.88": 9,
     "0.86": 9,
     "0.84": 9,
-    "0.82": 11,
-    "0.80": 14,
-    "0.78": 20,
-    "0.75": 23,
-    "0.70": 49
+    "0.82": 13,
+    "0.80": 20,
+    "0.78": 32,
+    "0.75": 46,
+    "0.70": 90
   },
   "final_unique_products": 4993,
   "grouped_records": 12,
@@ -24,7 +24,7 @@
     "0.95-1.00": 0,
     "0.90-0.95": 0,
     "0.86-0.90": 9,
-    "0.70-0.86": 527,
+    "0.70-0.86": 501,
     "<0.70": 0
   },
   "decision_reason_counts": {
@@ -40,22 +40,22 @@
       "color_match": 1
     },
     "no_merge": {
-      "penalty": 900,
-      "brand_match": 522,
-      "category_exact": 489,
-      "title_high": 385,
-      "price_close": 369,
-      "model_match": 361,
-      "pack_match": 293,
-      "size_ambiguous": 270,
-      "shade_match": 270,
-      "size_match": 198,
-      "color_match": 129,
-      "title_medium": 111,
-      "pack_missing_one_side": 91,
-      "size_missing_one_side": 17,
-      "model_missing_one_side": 14,
-      "size_missing_both": 10,
+      "penalty": 775,
+      "brand_match": 496,
+      "category_exact": 465,
+      "model_match": 384,
+      "price_close": 347,
+      "title_high": 339,
+      "pack_match": 253,
+      "size_ambiguous": 252,
+      "size_match": 185,
+      "shade_match": 164,
+      "title_medium": 116,
+      "color_match": 114,
+      "pack_missing_one_side": 95,
+      "size_missing_one_side": 15,
+      "size_missing_both": 11,
+      "model_missing_one_side": 10,
       "identifier_match": 9,
       "scent_match": 6,
       "generic_brand": 3
@@ -75,6 +75,10 @@
     "skipped_blocks": 0,
     "oversized_block_rows": 0,
     "candidate_cap_reached": 0
+  },
+  "clustering": {
+    "merge_edges_accepted": 9,
+    "merge_edges_blocked_by_cluster_guard": 0
   },
   "largest_groups": [
     {
@@ -278,5 +282,5 @@
       ]
     }
   ],
-  "elapsed_seconds": 3.197
+  "elapsed_seconds": 3.586
 }

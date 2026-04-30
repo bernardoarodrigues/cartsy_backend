@@ -25,7 +25,6 @@ COLOR_TERMS = {
     "blue",
     "branco",
     "branca",
-    "black",
     "marrom",
     "preto",
     "preta",
@@ -34,6 +33,47 @@ COLOR_TERMS = {
     "rose",
     "silver",
     "white",
+}
+
+SHADE_WORDS = {
+    "amarelo",
+    "azul",
+    "bege",
+    "black",
+    "brown",
+    "claro",
+    "dark",
+    "deep",
+    "escuro",
+    "fair",
+    "light",
+    "medio",
+    "medium",
+    "nude",
+    "pink",
+    "preto",
+    "rosa",
+    "white",
+}
+
+INVALID_SHADE_TOKENS = {
+    "acao",
+    "as",
+    "body",
+    "cabelo",
+    "com",
+    "corpo",
+    "corporal",
+    "da",
+    "de",
+    "do",
+    "em",
+    "es",
+    "face",
+    "para",
+    "pele",
+    "po",
+    "poral",
 }
 
 SCENT_TERMS = {
@@ -139,7 +179,7 @@ def extract_size(text: str) -> tuple[float | None, str | None, bool]:
 def convert_size(value: float, unit: str) -> tuple[float, str]:
     if unit == "l":
         return value * 1000.0, "ml"
-    if unit in {"floz", "floz", "floz", "floz", "floz"}:
+    if unit == "floz":
         return value * 29.5735, "ml"
     if unit == "fl oz":
         return value * 29.5735, "ml"
@@ -160,10 +200,22 @@ def extract_variant_terms(text: str) -> tuple[str | None, str | None, str | None
 
 
 def _extract_shade(text: str) -> str | None:
-    match = re.search(r"\b(?:cor|shade|tom)\s*([a-z0-9]{1,8})\b", text)
+    match = re.search(r"\b(?:cor|shade|tom)\s+([a-z0-9]{2,12})\b", text)
     if match:
-        return match.group(1)
+        candidate = match.group(1)
+        if is_valid_shade_token(candidate):
+            return candidate
     return None
+
+
+def is_valid_shade_token(token: str) -> bool:
+    if token in INVALID_SHADE_TOKENS:
+        return False
+    if token in SHADE_WORDS:
+        return True
+    if any(ch.isdigit() for ch in token):
+        return 2 <= len(token) <= 8
+    return len(token) >= 4
 
 
 def sizes_equivalent(a_value: float, a_unit: str, b_value: float, b_unit: str) -> bool:

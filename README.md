@@ -50,6 +50,8 @@ The pipeline is organized as layers:
 
 The dedupe target is the same purchasable variant when variant attributes are clear. Size is a strong signal but not an unconditional blocker: missing or ambiguous size lowers confidence, while clearly incompatible sizes on both records prevent automatic merge.
 
+Layer 3 adds cluster-level safeguards after pair scoring. Even if a pair clears the merge threshold, the union step refuses to connect clusters when the combined group would contain conflicting strong brands, conflicting global identifiers, clearly incompatible sizes, or conflicting clear variant attributes.
+
 ## Outputs
 
 Each run writes:
@@ -86,6 +88,7 @@ This favors avoiding false-positive merges, because a bad merge could attach the
 - `near_miss_pairs`: plausible pairs below the merge threshold.
 - `threshold_sensitivity`: how many kept pairs would merge at nearby thresholds.
 - `decision_reason_counts`: top explanation signals for merged and non-merged near-miss pairs.
+- `clustering`: accepted merge edges and merge edges blocked by the cluster guard.
 
 ## With More Time
 

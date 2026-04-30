@@ -63,13 +63,14 @@ def run_pipeline(
         if pair_number % 100_000 == 0:
             print(f"scored {pair_number:,} candidate pairs; kept {len(candidate_pairs):,}")
 
-    clusters = build_clusters(products, candidate_pairs, id_to_index)
+    clusters, cluster_stats = build_clusters(products, candidate_pairs, id_to_index)
     source_to_cluster = invert_clusters(clusters)
     report = build_summary_report(
         products=products,
         candidate_pairs=candidate_pairs,
         clusters=clusters,
         blocking_stats=blocking_stats,
+        cluster_stats=cluster_stats,
         scored_candidate_pairs=len(pair_blocks),
         elapsed_seconds=perf_counter() - started,
     )

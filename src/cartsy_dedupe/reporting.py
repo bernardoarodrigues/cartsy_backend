@@ -11,6 +11,7 @@ def build_summary_report(
     candidate_pairs: list[CandidatePair],
     clusters: dict[str, dict[str, object]],
     blocking_stats: dict[str, int],
+    cluster_stats: dict[str, int],
     scored_candidate_pairs: int,
     elapsed_seconds: float,
 ) -> dict[str, object]:
@@ -36,6 +37,7 @@ def build_summary_report(
         "decision_reason_counts": decision_reason_counts(candidate_pairs),
         "top_quality_flags": dict(quality_flags.most_common(20)),
         "blocking": blocking_stats,
+        "clustering": cluster_stats,
         "largest_groups": largest_groups(clusters),
         "lowest_confidence_accepted_merges": lowest_confidence_groups(clusters),
         "elapsed_seconds": round(elapsed_seconds, 3),
