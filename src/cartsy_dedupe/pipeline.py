@@ -24,15 +24,20 @@ def run_pipeline(
     started = perf_counter()
     output_path = prepare_output_dir(output_dir)
 
+    print(f"loading and normalizing {input_path}")
     products = load_normalized_products(input_path, limit=limit)
+    print(f"normalized {len(products):,} products")
     id_to_index = {product.source_id: index for index, product in enumerate(products)}
 
+    print("generating candidate pairs")
     pair_blocks, blocking_stats = generate_candidate_pairs(
         products,
         max_block_size=config.max_block_size,
         max_candidate_pairs=config.max_candidate_pairs,
     )
+    print(f"generated {len(pair_blocks):,} candidate pairs")
 
+    print("scoring candidate pairs")
     candidate_pairs: list[CandidatePair] = []
     for pair_number, ((left_index, right_index), block_keys) in enumerate(pair_blocks.items(), start=1):
         left = products[left_index]

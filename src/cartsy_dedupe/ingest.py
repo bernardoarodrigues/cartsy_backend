@@ -21,4 +21,6 @@ def load_normalized_products(path: str | Path, limit: int | None = None) -> list
         if limit is not None and idx > limit:
             break
         products.append(normalize_row(row))
+        if idx % 50_000 == 0:
+            print(f"normalized {idx:,} rows")
     return products

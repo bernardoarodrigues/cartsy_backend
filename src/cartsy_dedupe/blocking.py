@@ -56,11 +56,13 @@ def generate_candidate_pairs(
     for index, product in enumerate(products):
         for key in product_blocking_keys(product):
             blocks[key].append(index)
+        if (index + 1) % 50_000 == 0:
+            print(f"assigned blocking keys for {index + 1:,} products")
 
     pairs: dict[tuple[int, int], set[str]] = defaultdict(set)
     skipped_blocks = 0
     oversized_rows = 0
-    for key, indexes in blocks.items():
+    for block_number, (key, indexes) in enumerate(blocks.items(), start=1):
         if len(indexes) < 2:
             continue
         if len(indexes) > max_block_size:
@@ -74,12 +76,15 @@ def generate_candidate_pairs(
                 left, right = right, left
             pairs[(left, right)].add(key)
             if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
+                print(f"candidate cap reached at {len(pairs):,} pairs")
                 return pairs, {
                     "blocking_keys": len(blocks),
                     "skipped_blocks": skipped_blocks,
                     "oversized_block_rows": oversized_rows,
                     "candidate_cap_reached": 1,
                 }
+        if block_number % 100_000 == 0:
+            print(f"processed {block_number:,} blocks; candidate pairs={len(pairs):,}")
 
     return pairs, {
         "blocking_keys": len(blocks),
