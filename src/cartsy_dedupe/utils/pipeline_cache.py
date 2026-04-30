@@ -85,6 +85,27 @@ def retrieval_cache_key(
     )
 
 
+def retrieval_layer_cache_key(
+    *,
+    normalization_key: str,
+    layer: str,
+    layer_params: dict[str, Any],
+    env: dict[str, str | None],
+    code: dict[str, str],
+) -> str:
+    return cache_key(
+        {
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
+            "stage": f"retrieve_candidates:{layer}",
+            "normalization_key": normalization_key,
+            "layer": layer,
+            "layer_params": layer_params,
+            "env": env,
+            "code": code,
+        }
+    )
+
+
 def scoring_cache_key(
     *,
     retrieval_key: str,
@@ -135,6 +156,32 @@ def pair_blocks_to_records(pair_blocks: dict[tuple[int, int], set[str]]) -> list
         }
         for (left, right), block_keys in sorted(pair_blocks.items())
     ]
+
+
+def retrieval_rows_to_records(rows: list[tuple[int, int, str]]) -> list[dict[str, object]]:
+    return [
+        {
+            "left_index": left,
+            "right_index": right,
+            "evidence": evidence,
+        }
+        for left, right, evidence in rows
+    ]
+
+
+def retrieval_rows_from_records(records: list[dict[str, Any]]) -> list[tuple[int, int, str]]:
+    rows: list[tuple[int, int, str]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        rows.append(
+            (
+                int(record["left_index"]),
+                int(record["right_index"]),
+                str(record["evidence"]),
+            )
+        )
+    return rows
 
 
 def pair_blocks_from_records(records: list[dict[str, Any]]) -> dict[tuple[int, int], set[str]]:

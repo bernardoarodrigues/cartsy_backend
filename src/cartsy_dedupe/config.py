@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class PipelineConfig:
     merge_threshold: float = 0.84
     near_miss_threshold: float = 0.70
-    max_block_size: int | None = 5_000
+    max_block_size: int | None = 500
     max_candidate_pairs: int | None = 500_000
     near_miss_limit: int = 25_000
     sample_pair_limit: int = 500_000

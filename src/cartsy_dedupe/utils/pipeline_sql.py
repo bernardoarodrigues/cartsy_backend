@@ -36,24 +36,32 @@ def lexical_candidate_sql() -> str:
 
 def trigram_candidate_sql() -> str:
     return """
+        WITH brand_sizes AS (
+            SELECT brand_norm, COUNT(*)::int AS brand_size
+            FROM cartsy_products
+            WHERE brand_norm <> ''
+            GROUP BY brand_norm
+        )
         SELECT p.source_index, q.source_index,
                'trigram:title:' || round(q.similarity::numeric, 4)::text AS evidence
         FROM cartsy_products p
+        JOIN brand_sizes b
+          ON b.brand_norm = p.brand_norm
         JOIN LATERAL (
             SELECT candidate.source_index,
-                   similarity(candidate.name_norm, p.name_norm) AS similarity
+                   1 - (candidate.name_norm <-> p.name_norm) AS similarity
             FROM cartsy_products candidate
             WHERE candidate.source_index > p.source_index
               AND candidate.brand_norm = p.brand_norm
               AND candidate.brand_norm <> ''
               AND p.name_norm <> ''
               AND abs(char_length(candidate.name_norm) - char_length(p.name_norm)) <= 24
-              AND candidate.name_norm %% p.name_norm
-              AND similarity(candidate.name_norm, p.name_norm) >= %s
-            ORDER BY similarity DESC
+              AND (candidate.name_norm <-> p.name_norm) <= (1 - %s)
+            ORDER BY candidate.name_norm <-> p.name_norm ASC
             LIMIT %s
         ) q ON true
-        WHERE q.similarity >= 0.45
+        WHERE b.brand_size <= COALESCE(%s, b.brand_size)
+          AND q.similarity >= 0.45
     """
 
 

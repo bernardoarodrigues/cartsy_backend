@@ -10,6 +10,9 @@ from cartsy_dedupe.utils.pipeline_cache import (
     pair_blocks_from_records,
     pair_blocks_to_records,
     product_signature,
+    retrieval_layer_cache_key,
+    retrieval_rows_from_records,
+    retrieval_rows_to_records,
     retrieval_cache_key,
     scoring_cache_key,
 )
@@ -47,6 +50,14 @@ def test_pair_blocks_round_trip() -> None:
     restored = pair_blocks_from_records(pair_blocks_to_records(pair_blocks))
 
     assert restored == pair_blocks
+
+
+def test_retrieval_rows_round_trip() -> None:
+    rows = [(1, 2, "lexical:fts:0.81"), (2, 4, "trigram:title:0.91")]
+
+    restored = retrieval_rows_from_records(retrieval_rows_to_records(rows))
+
+    assert restored == rows
 
 
 def test_candidate_pairs_round_trip() -> None:
@@ -109,6 +120,27 @@ def test_stage_cache_keys_change_with_inputs() -> None:
         config=config,
         env=env,
         code={"pipeline.py": "def456"},
+    )
+    layer_key = retrieval_layer_cache_key(
+        normalization_key="norm-key",
+        layer="lexical",
+        layer_params={"fts_candidates": 25},
+        env=env,
+        code=code,
+    )
+    assert layer_key != retrieval_layer_cache_key(
+        normalization_key="norm-key",
+        layer="trigram",
+        layer_params={"fts_candidates": 25},
+        env=env,
+        code=code,
+    )
+    assert layer_key != retrieval_layer_cache_key(
+        normalization_key="norm-key",
+        layer="lexical",
+        layer_params={"fts_candidates": 50},
+        env=env,
+        code=code,
     )
 
 

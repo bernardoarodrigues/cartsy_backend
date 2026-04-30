@@ -35,6 +35,9 @@ from cartsy_dedupe.utils.pipeline_cache import (
     product_signature,
     read_normalization_cache,
     read_stage_cache,
+    retrieval_layer_cache_key,
+    retrieval_rows_from_records,
+    retrieval_rows_to_records,
     retrieval_cache_key,
     scoring_cache_key,
     stage_env_fingerprint,
@@ -99,6 +102,7 @@ class DedupePipeline:
         self.extraction_count = 0
         self.metrics = RunMetrics()
         self.dev = dev
+        self.retrieval_layer_cache_status: dict[str, dict[str, object]] = {}
 
     def dev_log(self, message: str) -> None:
         if self.dev:
@@ -140,10 +144,19 @@ class DedupePipeline:
         products: list[NormalizedProduct],
         *,
         config: PipelineConfig,
+        normalization_key: str | None = None,
+        retrieval_env: dict[str, str | None] | None = None,
+        retrieval_code: dict[str, str] | None = None,
     ) -> tuple[PairBlocks, dict[str, int]]:
         self.dev_log("running retrieval stages: exact -> lexical -> trigram -> vector")
         with self.connect() as conn:
-            pair_blocks, layer_counts = self.retrieve_candidate_pairs(conn, config)
+            pair_blocks, layer_counts = self.retrieve_candidate_pairs(
+                conn,
+                config,
+                normalization_key=normalization_key,
+                retrieval_env=retrieval_env,
+                retrieval_code=retrieval_code,
+            )
             self.dev_log("running candidate attribute extraction")
             self.extract_candidate_attributes(conn, pair_blocks)
             self.dev_log("loading extracted attributes into normalized products")
@@ -294,6 +307,7 @@ class DedupePipeline:
             cur.execute("CREATE INDEX idx_cartsy_products_brand ON cartsy_products (brand_norm)")
             cur.execute("CREATE INDEX idx_cartsy_products_search ON cartsy_products USING GIN (search_vector)")
             cur.execute("CREATE INDEX idx_cartsy_products_title_trgm ON cartsy_products USING GIN (name_norm gin_trgm_ops)")
+            cur.execute("CREATE INDEX idx_cartsy_products_title_trgm_gist ON cartsy_products USING GiST (name_norm gist_trgm_ops)")
             cur.execute("CREATE INDEX idx_cartsy_products_attrs ON cartsy_products USING GIN (extracted_attributes)")
             cur.execute("CREATE INDEX idx_cartsy_exact_keys ON cartsy_exact_keys (key_type, key_value)")
         conn.commit()
@@ -521,11 +535,29 @@ class DedupePipeline:
             if product is not None:
                 product.extracted_attributes = attrs
 
-    def retrieve_candidate_pairs(self, conn, config: PipelineConfig) -> tuple[PairBlocks, Counter[str]]:
+    def retrieve_candidate_pairs(
+        self,
+        conn,
+        config: PipelineConfig,
+        *,
+        normalization_key: str | None = None,
+        retrieval_env: dict[str, str | None] | None = None,
+        retrieval_code: dict[str, str] | None = None,
+    ) -> tuple[PairBlocks, Counter[str]]:
         pairs: PairBlocks = defaultdict(set)
         counts: Counter[str] = Counter()
         self.dev_log("retrieval stage: exact keys")
-        self.add_candidate_rows(conn, pairs, counts, "exact", exact_candidate_sql(), (), config.max_candidate_pairs)
+        exact_rows = self.load_or_fetch_retrieval_rows(
+            conn,
+            layer="exact",
+            sql=exact_candidate_sql(),
+            params=(),
+            layer_params={},
+            normalization_key=normalization_key,
+            retrieval_env=retrieval_env,
+            retrieval_code=retrieval_code,
+        )
+        self.merge_candidate_rows(pairs, counts, "exact", exact_rows, config.max_candidate_pairs)
         exact_resolved_indexes = {
             index
             for pair, evidence in pairs.items()
@@ -533,54 +565,181 @@ class DedupePipeline:
             for index in pair
         }
         self.dev_log("retrieval stage: lexical FTS")
-        self.add_candidate_rows(
+        lexical_rows = self.load_or_fetch_retrieval_rows(
             conn,
-            pairs,
-            counts,
             "lexical",
-            lexical_candidate_sql(),
-            (self.fts_candidates,),
-            config.max_candidate_pairs,
+            sql=lexical_candidate_sql(),
+            params=(self.fts_candidates,),
+            layer_params={"fts_candidates": self.fts_candidates},
+            normalization_key=normalization_key,
+            retrieval_env=retrieval_env,
+            retrieval_code=retrieval_code,
         )
+        self.merge_candidate_rows(pairs, counts, "lexical", lexical_rows, config.max_candidate_pairs)
         self.dev_log("retrieval stage: trigram")
-        self.add_candidate_rows(
+        trigram_rows = self.load_or_fetch_retrieval_rows(
             conn,
-            pairs,
-            counts,
             "trigram",
-            trigram_candidate_sql(),
-            (self.trigram_min_similarity, self.trigram_candidates),
-            config.max_candidate_pairs,
+            sql=trigram_candidate_sql(),
+            params=(self.trigram_min_similarity, self.trigram_candidates, config.max_block_size),
+            layer_params={
+                "trigram_min_similarity": self.trigram_min_similarity,
+                "trigram_candidates": self.trigram_candidates,
+                "max_block_size": config.max_block_size,
+            },
+            normalization_key=normalization_key,
+            retrieval_env=retrieval_env,
+            retrieval_code=retrieval_code,
         )
+        self.merge_candidate_rows(pairs, counts, "trigram", trigram_rows, config.max_candidate_pairs)
         cap_reached = config.max_candidate_pairs is not None and len(pairs) >= config.max_candidate_pairs
         if self.vector_candidates > 0 and not cap_reached:
             self.dev_log("retrieval stage: vector embeddings")
             self.embed_products(conn, exclude_indexes=exact_resolved_indexes)
-            self.add_candidate_rows(
+            vector_rows = self.load_or_fetch_retrieval_rows(
                 conn,
-                pairs,
-                counts,
                 "vector",
-                vector_candidate_sql(),
-                (self.vector_candidates,),
-                config.max_candidate_pairs,
+                sql=vector_candidate_sql(),
+                params=(self.vector_candidates,),
+                layer_params={
+                    "vector_candidates": self.vector_candidates,
+                    "excluded_exact_index_count": len(exact_resolved_indexes),
+                },
+                normalization_key=normalization_key,
+                retrieval_env=retrieval_env,
+                retrieval_code=retrieval_code,
             )
+            self.merge_candidate_rows(pairs, counts, "vector", vector_rows, config.max_candidate_pairs)
         return pairs, counts
 
-    def add_candidate_rows(
+    def load_or_fetch_retrieval_rows(
         self,
         conn,
-        pairs: PairBlocks,
-        counts: Counter[str],
+        layer: str,
+        *,
+        sql: str,
+        params: tuple[object, ...],
+        layer_params: dict[str, object],
+        normalization_key: str | None,
+        retrieval_env: dict[str, str | None] | None,
+        retrieval_code: dict[str, str] | None,
+    ) -> list[tuple[int, int, str]]:
+        layer_env = self.layer_cache_env(layer, retrieval_env) if retrieval_env is not None else None
+        if normalization_key and layer_env is not None and retrieval_code is not None:
+            layer_key = retrieval_layer_cache_key(
+                normalization_key=normalization_key,
+                layer=layer,
+                layer_params=layer_params,
+                env=layer_env,
+                code=retrieval_code,
+            )
+            layer_path = cache_path_for(f"retrieve_candidates_{layer}", layer_key)
+            self.retrieval_layer_cache_status[layer] = {
+                "used": 0,
+                "path": str(layer_path),
+                "key": layer_key,
+            }
+            cached = read_stage_cache(layer_path)
+            if cached is not None:
+                self.retrieval_layer_cache_status[layer]["used"] = 1
+                return retrieval_rows_from_records(cached["payload"].get("rows") or [])
+            fallback_path, fallback_blob = self.find_compatible_retrieval_layer_cache(
+                layer=layer,
+                layer_path=layer_path,
+                normalization_key=normalization_key,
+                layer_params=layer_params,
+            )
+            if fallback_blob is not None:
+                self.retrieval_layer_cache_status[layer]["used"] = 1
+                self.retrieval_layer_cache_status[layer]["mode"] = "lenient"
+                self.retrieval_layer_cache_status[layer]["path"] = str(fallback_path)
+                return retrieval_rows_from_records(fallback_blob["payload"].get("rows") or [])
+
+        rows = self.fetch_candidate_rows(conn, layer, sql, params)
+        if normalization_key and layer_env is not None and retrieval_code is not None:
+            write_stage_cache(
+                layer_path,
+                metadata={
+                    "stage": f"retrieve_candidates:{layer}",
+                    "normalization_key": normalization_key,
+                    "layer_params": layer_params,
+                    "env": layer_env,
+                    "code": retrieval_code,
+                },
+                payload={"rows": retrieval_rows_to_records(rows)},
+            )
+        return rows
+
+    @staticmethod
+    def layer_cache_env(layer: str, retrieval_env: dict[str, str | None]) -> dict[str, str | None]:
+        env_keys_by_layer = {
+            "exact": tuple(),
+            "lexical": ("CARTSY_FTS_CANDIDATES",),
+            "trigram": ("CARTSY_TRIGRAM_CANDIDATES", "CARTSY_TRIGRAM_MIN_SIMILARITY"),
+            "vector": (
+                "OPENAI_EMBEDDING_MODEL",
+                "CARTSY_EMBEDDING_DIMENSIONS",
+                "CARTSY_EMBEDDING_BATCH_SIZE",
+                "CARTSY_VECTOR_CANDIDATES",
+            ),
+        }
+        keys = env_keys_by_layer.get(layer)
+        if keys is None:
+            return dict(retrieval_env)
+        return {key: retrieval_env.get(key) for key in keys}
+
+    def find_compatible_retrieval_layer_cache(
+        self,
+        *,
+        layer: str,
+        layer_path: Path,
+        normalization_key: str,
+        layer_params: dict[str, object],
+    ) -> tuple[Path | None, dict[str, Any] | None]:
+        stage_name = f"retrieve_candidates:{layer}"
+        for candidate_path in sorted(layer_path.parent.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
+            if candidate_path == layer_path:
+                continue
+            candidate_blob = read_stage_cache(candidate_path)
+            if candidate_blob is None:
+                continue
+            metadata = candidate_blob.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            if not self.cache_metadata_matches_layer(
+                metadata=metadata,
+                stage_name=stage_name,
+                normalization_key=normalization_key,
+                layer_params=layer_params,
+            ):
+                continue
+            return candidate_path, candidate_blob
+        return None, None
+
+    @staticmethod
+    def cache_metadata_matches_layer(
+        *,
+        metadata: dict[str, Any],
+        stage_name: str,
+        normalization_key: str,
+        layer_params: dict[str, object],
+    ) -> bool:
+        return (
+            metadata.get("stage") == stage_name
+            and metadata.get("normalization_key") == normalization_key
+            and metadata.get("layer_params") == layer_params
+        )
+
+    def fetch_candidate_rows(
+        self,
+        conn,
         layer: str,
         sql: str,
         params: tuple[object, ...],
-        max_candidate_pairs: int | None,
-    ) -> None:
-        if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
-            return
+    ) -> list[tuple[int, int, str]]:
         show_progress = layer in {"lexical", "trigram", "vector"}
         cursor_name = f"cartsy_{layer}_{int(perf_counter() * 1_000_000)}"
+        collected: list[tuple[int, int, str]] = []
         with conn.cursor(name=cursor_name) as cur:
             cur.execute(sql, params)
             bar = tqdm(desc=f"{layer} retrieval rows", unit="row", mininterval=0.2) if show_progress else None
@@ -596,13 +755,27 @@ class DedupePipeline:
                             continue
                         if left > right:
                             left, right = right, left
-                        pairs[(left, right)].add(str(evidence))
-                        counts[layer] += 1
-                        if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
-                            return
+                        collected.append((left, right, str(evidence)))
             finally:
                 if bar is not None:
                     bar.close()
+        return collected
+
+    def merge_candidate_rows(
+        self,
+        pairs: PairBlocks,
+        counts: Counter[str],
+        layer: str,
+        rows: list[tuple[int, int, str]],
+        max_candidate_pairs: int | None,
+    ) -> None:
+        if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
+            return
+        for left, right, evidence in rows:
+            pairs[(left, right)].add(evidence)
+            counts[layer] += 1
+            if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
+                return
 
     def score_postgres_pair(
         self,
@@ -803,7 +976,13 @@ def run_pipeline(
             stage_cache_status["retrieve_candidates"]["used"] = 1
             return pair_blocks, blocking_stats
 
-        pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(products, config=config)
+        pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(
+            products,
+            config=config,
+            normalization_key=cache_key,
+            retrieval_env=retrieval_env,
+            retrieval_code=retrieval_code,
+        )
         write_stage_cache(
             retrieval_path,
             metadata={
@@ -822,9 +1001,12 @@ def run_pipeline(
                 "extraction_count": dedupe_pipeline.extraction_count,
             },
         )
+        stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
         return pair_blocks, blocking_stats
 
     pair_blocks, blocking_stats = run_stage("retrieve_candidates", retrieve_candidates_action, items=len(products))
+    if "layers" not in stage_cache_status["retrieve_candidates"]:
+        stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
     print(f"generated {len(pair_blocks):,} candidate pairs")
 
     scoring_code = code_fingerprint("pipeline.py", "scoring.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
