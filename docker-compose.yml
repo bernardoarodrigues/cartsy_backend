@@ -2,19 +2,37 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: cartsy
-      POSTGRES_PASSWORD: cartsy
-      POSTGRES_DB: cartsy_matcher
+      POSTGRES_USER: ${POSTGRES_USER:-cartsy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cartsy}
+      POSTGRES_DB: ${POSTGRES_DB:-cartsy_matcher}
     ports:
       - "5432:5432"
     volumes:
       - cartsy_postgres_data:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cartsy -d cartsy_matcher"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cartsy} -d ${POSTGRES_DB:-cartsy_matcher}"]
       interval: 5s
       timeout: 5s
       retries: 20
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      cartsy-dedupe serve
+      --runs-root /app/outputs
+      --host 0.0.0.0
+      --port 8000
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./outputs:/app/outputs
 
 volumes:
   cartsy_postgres_data:

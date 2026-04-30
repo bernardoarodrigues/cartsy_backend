@@ -18,6 +18,12 @@ Set `OPENAI_API_KEY` in `.env`, then start Postgres with pgvector:
 docker compose up -d postgres
 ```
 
+To run Postgres and the REST API together in Docker:
+
+```bash
+docker compose up -d
+```
+
 Run tests:
 
 ```bash
@@ -42,7 +48,15 @@ Run on the full local CSV:
   --near-miss-threshold 0.70
 ```
 
-For a full uncapped run, pass `--max-candidate-pairs none`:
+Use `--dev` while iterating locally to print per-stage debug messages and tqdm progress bars for normalization, attribute extraction, embedding batches, and scoring:
+
+```bash
+.venv/bin/cartsy-dedupe run --input data/products.csv --output outputs --dev
+```
+
+By default, runs cap retrieval with `--max-block-size 5000` and `--max-candidate-pairs 500000`.
+
+For a full uncapped run, pass `--max-block-size none --max-candidate-pairs none`:
 
 ```bash
 .venv/bin/cartsy-dedupe run \
@@ -50,7 +64,7 @@ For a full uncapped run, pass `--max-candidate-pairs none`:
   --output outputs \
   --merge-threshold 0.84 \
   --near-miss-threshold 0.70 \
-  --max-block-size 5000 \
+  --max-block-size none \
   --max-candidate-pairs none
 ```
 
@@ -80,7 +94,10 @@ Model names are configurable through `.env` because evaluator accounts may expos
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_EXTRACTION_MODEL=gpt-5.4-nano
 CARTSY_LLM_EXTRACTION_LIMIT=100
+CARTSY_NORMALIZATION_CACHE_DIR=.cache/cartsy-dedupe/normalization
 ```
+
+Normalization output is cached by input file metadata, optional `--limit`, and the `normalize.py` file hash. If `normalize.py` and the input file have not changed, later runs reuse cached normalized products instead of recomputing them.
 
 ## Outputs
 
@@ -120,6 +137,12 @@ Serve completed run artifacts with:
 
 ```bash
 .venv/bin/cartsy-dedupe serve --runs-root outputs --host 127.0.0.1 --port 8000
+```
+
+Or with Docker Compose (recommended for reproducible setup):
+
+```bash
+docker compose up -d api
 ```
 
 Useful endpoints:

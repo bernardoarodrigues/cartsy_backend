@@ -4,25 +4,61 @@ import json
 import os
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, TypeVar
-from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from tqdm import tqdm
 
-from cartsy_dedupe.config import PipelineConfig
 from cartsy_dedupe.clustering import build_clusters
+from cartsy_dedupe.config import PipelineConfig
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.reporting import build_summary_report
 from cartsy_dedupe.schemas import CandidatePair, NormalizedProduct
 from cartsy_dedupe.scoring import score_pair
 from cartsy_dedupe.storage import prepare_output_dir, write_outputs
-from cartsy_dedupe.text import informative_tokens, normalize_text
+from cartsy_dedupe.utils.pipeline_cache import (
+    cache_path_for,
+    candidate_pairs_from_records,
+    candidate_pairs_to_records,
+    clustering_cache_key,
+    code_fingerprint,
+    normalization_cache_dir,
+    normalization_cache_key,
+    normalize_module_hash,
+    pair_blocks_from_records,
+    pair_blocks_to_records,
+    product_signature,
+    read_normalization_cache,
+    read_stage_cache,
+    retrieval_cache_key,
+    scoring_cache_key,
+    stage_env_fingerprint,
+    write_normalization_cache,
+    write_stage_cache,
+)
+from cartsy_dedupe.utils.pipeline_helpers import (
+    ExtractedAttributes,
+    batched,
+    embedding_text,
+    ensure_openai_api_key,
+    exact_keys,
+    extracted_attribute_score,
+    invert_clusters,
+    product_search_text,
+)
+from cartsy_dedupe.utils.pipeline_metrics import RunMetrics
+from cartsy_dedupe.utils.pipeline_sql import (
+    exact_candidate_sql,
+    lexical_candidate_sql,
+    postgres_retrieval_features,
+    trigram_candidate_sql,
+    vector_candidate_sql,
+)
 
 try:  # pragma: no cover - import failure is exercised only in incomplete envs.
     import psycopg
@@ -40,132 +76,13 @@ T = TypeVar("T")
 PairBlocks = dict[tuple[int, int], set[str]]
 Clusters = dict[str, dict[str, object]]
 
-USD_PER_1M_TOKENS: dict[str, dict[str, float]] = {
-    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
-    "text-embedding-3-small": {"input": 0.02},
-}
 
-
-@dataclass
-class StageMetric:
-    elapsed_seconds: float = 0.0
-    items: int = 0
-
-    def as_report(self) -> dict[str, float | int | None]:
-        return {
-            "elapsed_seconds": round(self.elapsed_seconds, 3),
-            "items": self.items,
-            "avg_seconds_per_item": round(self.elapsed_seconds / self.items, 6) if self.items else None,
-        }
-
-
-@dataclass
-class UsageAccumulator:
-    calls: int = 0
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
-
-    def add(self, usage: Any) -> None:
-        if usage is None:
-            return
-        self.calls += 1
-        input_tokens = usage_value(usage, "input_tokens", "prompt_tokens")
-        output_tokens = usage_value(usage, "output_tokens", "completion_tokens")
-        total_tokens = usage_value(usage, "total_tokens")
-        cached_tokens = usage_nested_value(usage, "input_tokens_details", "cached_tokens")
-        self.input_tokens += input_tokens
-        self.cached_input_tokens += cached_tokens
-        self.output_tokens += output_tokens
-        self.total_tokens += total_tokens or input_tokens + output_tokens
-
-    def cost_usd(self, model: str) -> float:
-        prices = USD_PER_1M_TOKENS.get(model, {})
-        billable_input = max(0, self.input_tokens - self.cached_input_tokens)
-        return (
-            billable_input * prices.get("input", 0.0)
-            + self.cached_input_tokens * prices.get("cached_input", prices.get("input", 0.0))
-            + self.output_tokens * prices.get("output", 0.0)
-        ) / 1_000_000
-
-    def as_report(self, model: str) -> dict[str, float | int | str | None]:
-        return {
-            "model": model,
-            "calls": self.calls,
-            "input_tokens": self.input_tokens,
-            "cached_input_tokens": self.cached_input_tokens,
-            "output_tokens": self.output_tokens,
-            "total_tokens": self.total_tokens,
-            "estimated_cost_usd": round(self.cost_usd(model), 6),
-            "pricing_note": "Estimated with standard OpenAI prices per 1M tokens configured in pipeline.py.",
-        }
-
-
-@dataclass
-class RunMetrics:
-    stages: dict[str, StageMetric] = field(default_factory=dict)
-    openai_usage: dict[str, UsageAccumulator] = field(default_factory=lambda: defaultdict(UsageAccumulator))
-
-    @contextmanager
-    def stage(self, name: str, *, items: int = 0):
-        started = perf_counter()
-        try:
-            yield
-        finally:
-            metric = self.stages.setdefault(name, StageMetric())
-            metric.elapsed_seconds += perf_counter() - started
-            metric.items += items
-
-    def add_usage(self, model: str, usage: Any) -> None:
-        self.openai_usage[model].add(usage)
-
-    def as_report(self, *, embedding_model: str, extraction_model: str, input_records: int, total_elapsed_seconds: float) -> dict[str, object]:
-        usage_by_model = {
-            model: usage.as_report(model)
-            for model, usage in sorted(self.openai_usage.items())
-        }
-        total_cost = sum(usage.cost_usd(model) for model, usage in self.openai_usage.items())
-        return {
-            "timing": {
-                "total_elapsed_seconds": round(total_elapsed_seconds, 3),
-                "input_records": input_records,
-                "avg_seconds_per_input_record": round(total_elapsed_seconds / input_records, 6) if input_records else None,
-                "stages": {name: metric.as_report() for name, metric in self.stages.items()},
-            },
-            "openai": {
-                "embedding_model": embedding_model,
-                "extraction_model": extraction_model,
-                "usage_by_model": usage_by_model,
-                "total_estimated_cost_usd": round(total_cost, 6),
-                "cost_source": "OpenAI standard pricing checked 2026-04-30; update USD_PER_1M_TOKENS if model prices change.",
-            },
-        }
-
-
-class ExtractedAttributes(BaseModel):
-    brand: str | None = None
-    product_line: str | None = None
-    product_type: str | None = None
-    category: str | None = None
-    color: str | None = None
-    size: str | None = None
-    scent: str | None = None
-    flavor: str | None = None
-    material: str | None = None
-    pack_count: str | None = None
-    variant_name: str | None = None
-    model_number: str | None = None
-    sku_like_identifiers: list[str] = Field(default_factory=list)
-    open_attributes: dict[str, str] = Field(default_factory=dict)
-
-
-class PostgresOpenAIPipeline:
+class DedupePipeline:
     """Postgres + pgvector + OpenAI implementation of the architecture doc."""
 
     name = "postgres_openai"
 
-    def __init__(self) -> None:
+    def __init__(self, *, dev: bool = False) -> None:
         load_dotenv(dotenv_path=Path.cwd() / ".env")
         self.database_url = os.getenv("DATABASE_URL", "postgresql://cartsy:cartsy@localhost:5432/cartsy_matcher")
         self.embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
@@ -174,20 +91,44 @@ class PostgresOpenAIPipeline:
         self.llm_extraction_limit = int(os.getenv("CARTSY_LLM_EXTRACTION_LIMIT", "100"))
         self.fts_candidates = int(os.getenv("CARTSY_FTS_CANDIDATES", "25"))
         self.trigram_candidates = int(os.getenv("CARTSY_TRIGRAM_CANDIDATES", "25"))
+        self.trigram_min_similarity = float(os.getenv("CARTSY_TRIGRAM_MIN_SIMILARITY", "0.55"))
         self.vector_candidates = int(os.getenv("CARTSY_VECTOR_CANDIDATES", "25"))
         self.embedding_dimensions = int(os.getenv("CARTSY_EMBEDDING_DIMENSIONS", "1536"))
         self.extracted_by_source_id: dict[str, dict[str, Any]] = {}
         self.embedding_count = 0
         self.extraction_count = 0
         self.metrics = RunMetrics()
+        self.dev = dev
+
+    def dev_log(self, message: str) -> None:
+        if self.dev:
+            print(f"[dev] {message}")
+
+    def progress(
+        self,
+        iterable: Iterable[T],
+        *,
+        total: int | None = None,
+        desc: str,
+        unit: str,
+        mininterval: float = 0.2,
+    ) -> Iterable[T]:
+        if not self.dev:
+            return iterable
+        return tqdm(iterable, total=total, desc=desc, unit=unit, mininterval=mininterval)
 
     def normalize_rows(self, rows: Iterable[dict[str, str]]) -> list[NormalizedProduct]:
         products: list[NormalizedProduct] = []
-        for idx, row in enumerate(rows, start=1):
+        row_count = len(rows) if isinstance(rows, Sequence) else None
+        for idx, row in enumerate(
+            self.progress(rows, total=row_count, desc="normalize rows", unit="row"),
+            start=1,
+        ):
             products.append(normalize_row(row))
             if idx % 50_000 == 0:
                 print(f"normalized {idx:,} rows")
 
+        self.dev_log("writing normalized rows into Postgres staging tables")
         with self.connect() as conn:
             self.reset_database(conn)
             self.insert_products(conn, products)
@@ -200,9 +141,12 @@ class PostgresOpenAIPipeline:
         *,
         config: PipelineConfig,
     ) -> tuple[PairBlocks, dict[str, int]]:
+        self.dev_log("running retrieval stages: exact -> lexical -> trigram -> vector")
         with self.connect() as conn:
             pair_blocks, layer_counts = self.retrieve_candidate_pairs(conn, config)
+            self.dev_log("running candidate attribute extraction")
             self.extract_candidate_attributes(conn, pair_blocks)
+            self.dev_log("loading extracted attributes into normalized products")
             self.load_extracted_attributes(conn, products)
         stats = {
             "candidate_cap_reached": int(config.max_candidate_pairs is not None and len(pair_blocks) >= config.max_candidate_pairs),
@@ -226,7 +170,11 @@ class PostgresOpenAIPipeline:
         config: PipelineConfig,
     ) -> tuple[list[CandidatePair], int]:
         candidate_pairs: list[CandidatePair] = []
-        for pair_number, ((left_index, right_index), block_keys) in enumerate(pair_blocks.items(), start=1):
+        pair_items = pair_blocks.items()
+        for pair_number, ((left_index, right_index), block_keys) in enumerate(
+            self.progress(pair_items, total=len(pair_blocks), desc="score pairs", unit="pair"),
+            start=1,
+        ):
             left = products[left_index]
             right = products[right_index]
             pair = self.score_postgres_pair(left, right, block_keys, config)
@@ -447,7 +395,13 @@ class PostgresOpenAIPipeline:
             )
             rows = cur.fetchall()
 
-        for source_id, brand, title, category, description, specs in rows:
+        self.dev_log(f"extracting attributes for up to {len(rows):,} candidate products")
+        for source_id, brand, title, category, description, specs in self.progress(
+            rows,
+            total=len(rows),
+            desc="extract attrs",
+            unit="product",
+        ):
             attrs = self.extract_attributes_with_openai(client, brand, title, category, description, specs)
             with conn.cursor() as cur:
                 cur.execute(
@@ -521,7 +475,14 @@ class PostgresOpenAIPipeline:
         if not rows:
             return
 
-        for batch in batched(rows, self.embedding_batch_size):
+        batches = list(batched(rows, self.embedding_batch_size))
+        self.dev_log(f"creating embeddings in {len(batches):,} batches")
+        for batch in self.progress(
+            batches,
+            total=len(batches),
+            desc="embed batches",
+            unit="batch",
+        ):
             texts = [
                 embedding_text(
                     brand=row[1],
@@ -563,6 +524,7 @@ class PostgresOpenAIPipeline:
     def retrieve_candidate_pairs(self, conn, config: PipelineConfig) -> tuple[PairBlocks, Counter[str]]:
         pairs: PairBlocks = defaultdict(set)
         counts: Counter[str] = Counter()
+        self.dev_log("retrieval stage: exact keys")
         self.add_candidate_rows(conn, pairs, counts, "exact", exact_candidate_sql(), (), config.max_candidate_pairs)
         exact_resolved_indexes = {
             index
@@ -570,6 +532,7 @@ class PostgresOpenAIPipeline:
             if any(key.startswith("exact:") for key in evidence)
             for index in pair
         }
+        self.dev_log("retrieval stage: lexical FTS")
         self.add_candidate_rows(
             conn,
             pairs,
@@ -579,17 +542,19 @@ class PostgresOpenAIPipeline:
             (self.fts_candidates,),
             config.max_candidate_pairs,
         )
+        self.dev_log("retrieval stage: trigram")
         self.add_candidate_rows(
             conn,
             pairs,
             counts,
             "trigram",
             trigram_candidate_sql(),
-            (self.trigram_candidates,),
+            (self.trigram_min_similarity, self.trigram_candidates),
             config.max_candidate_pairs,
         )
         cap_reached = config.max_candidate_pairs is not None and len(pairs) >= config.max_candidate_pairs
         if self.vector_candidates > 0 and not cap_reached:
+            self.dev_log("retrieval stage: vector embeddings")
             self.embed_products(conn, exclude_indexes=exact_resolved_indexes)
             self.add_candidate_rows(
                 conn,
@@ -614,17 +579,30 @@ class PostgresOpenAIPipeline:
     ) -> None:
         if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
             return
-        with conn.cursor() as cur:
+        show_progress = layer in {"lexical", "trigram", "vector"}
+        cursor_name = f"cartsy_{layer}_{int(perf_counter() * 1_000_000)}"
+        with conn.cursor(name=cursor_name) as cur:
             cur.execute(sql, params)
-            for left, right, evidence in cur:
-                if left == right:
-                    continue
-                if left > right:
-                    left, right = right, left
-                pairs[(left, right)].add(str(evidence))
-                counts[layer] += 1
-                if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
-                    return
+            bar = tqdm(desc=f"{layer} retrieval rows", unit="row", mininterval=0.2) if show_progress else None
+            try:
+                while True:
+                    rows = cur.fetchmany(2_000)
+                    if not rows:
+                        break
+                    if bar is not None:
+                        bar.update(len(rows))
+                    for left, right, evidence in rows:
+                        if left == right:
+                            continue
+                        if left > right:
+                            left, right = right, left
+                        pairs[(left, right)].add(str(evidence))
+                        counts[layer] += 1
+                        if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
+                            return
+            finally:
+                if bar is not None:
+                    bar.close()
 
     def score_postgres_pair(
         self,
@@ -694,259 +672,243 @@ class PostgresOpenAIPipeline:
         )
 
 
-def exact_keys(product: NormalizedProduct) -> dict[str, str]:
-    keys: dict[str, str] = {}
-    for key in ("ean", "gtin", "upc", "asin"):
-        value = product.identifiers.get(key)
-        if value:
-            keys[key] = value
-    if product.retailer and product.identifiers.get("sku"):
-        keys[f"retailer_sku:{product.retailer}"] = product.identifiers["sku"]
-    url_key = canonicalize_url(product.url)
-    if url_key:
-        keys["canonical_url"] = url_key
-    return keys
-
-
-def canonicalize_url(url: str) -> str:
-    if not url:
-        return ""
-    parsed = urlparse(url)
-    host = parsed.netloc.lower().removeprefix("www.")
-    path = parsed.path.rstrip("/").lower()
-    if not host or not path:
-        return ""
-    return normalize_text(f"{host} {path}").replace(" ", "/")[:240]
-
-
-def product_search_text(product: NormalizedProduct) -> str:
-    tokens = informative_tokens(product.name_norm, limit=8)
-    return " ".join(
-        part
-        for part in [
-            product.brand_norm,
-            " ".join(tokens),
-            product.category_leaf,
-            product.dimension_raw,
-        ]
-        if part
-    )
-
-
-def embedding_text(**parts: str | None) -> str:
-    return "\n".join(f"{key}: {value}" for key, value in parts.items() if value)
-
-
-def ensure_openai_api_key() -> None:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("Set OPENAI_API_KEY in .env or the environment before running the postgres_openai pipeline.")
-
-
-def batched(items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
-    for index in range(0, len(items), max(1, size)):
-        yield items[index : index + size]
-
-
-def usage_value(usage: Any, *names: str) -> int:
-    for name in names:
-        if isinstance(usage, dict):
-            value = usage.get(name)
-        else:
-            value = getattr(usage, name, None)
-        if value is not None:
-            return int(value)
-    return 0
-
-
-def usage_nested_value(usage: Any, parent_name: str, child_name: str) -> int:
-    parent = usage.get(parent_name) if isinstance(usage, dict) else getattr(usage, parent_name, None)
-    if parent is None:
-        return 0
-    value = parent.get(child_name) if isinstance(parent, dict) else getattr(parent, child_name, None)
-    return int(value or 0)
-
-
-def exact_candidate_sql() -> str:
-    return """
-        SELECT LEAST(a.product_index, b.product_index) AS left_index,
-               GREATEST(a.product_index, b.product_index) AS right_index,
-               'exact:' || a.key_type || ':' || left(a.key_value, 80) AS evidence
-        FROM cartsy_exact_keys a
-        JOIN cartsy_exact_keys b
-          ON a.key_type = b.key_type
-         AND a.key_value = b.key_value
-         AND a.product_index < b.product_index
-    """
-
-
-def lexical_candidate_sql() -> str:
-    return """
-        SELECT p.source_index, q.source_index,
-               'lexical:fts:' || round(q.rank::numeric, 4)::text AS evidence
-        FROM cartsy_products p
-        JOIN LATERAL (
-            SELECT candidate.source_index,
-                   ts_rank_cd(candidate.search_vector, plainto_tsquery('simple', p.search_text)) AS rank
-            FROM cartsy_products candidate
-            WHERE candidate.source_index > p.source_index
-              AND p.search_text <> ''
-              AND candidate.brand_norm = p.brand_norm
-              AND candidate.brand_norm <> ''
-              AND candidate.search_vector @@ plainto_tsquery('simple', p.search_text)
-            ORDER BY rank DESC
-            LIMIT %s
-        ) q ON true
-    """
-
-
-def trigram_candidate_sql() -> str:
-    return """
-        SELECT p.source_index, q.source_index,
-               'trigram:title:' || round(q.similarity::numeric, 4)::text AS evidence
-        FROM cartsy_products p
-        JOIN LATERAL (
-            SELECT candidate.source_index,
-                   similarity(candidate.name_norm, p.name_norm) AS similarity
-            FROM cartsy_products candidate
-            WHERE candidate.source_index > p.source_index
-              AND candidate.brand_norm = p.brand_norm
-              AND candidate.brand_norm <> ''
-              AND candidate.name_norm % p.name_norm
-            ORDER BY similarity DESC
-            LIMIT %s
-        ) q ON true
-        WHERE q.similarity >= 0.45
-    """
-
-
-def vector_candidate_sql() -> str:
-    return """
-        SELECT p.source_index, q.source_index,
-               'vector:cosine:' || round(q.similarity::numeric, 4)::text AS evidence
-        FROM cartsy_products p
-        JOIN LATERAL (
-            SELECT candidate.source_index,
-                   1 - (candidate.embedding <=> p.embedding) AS similarity
-            FROM cartsy_products candidate
-            WHERE p.embedding IS NOT NULL
-              AND candidate.embedding IS NOT NULL
-              AND candidate.source_index > p.source_index
-            ORDER BY candidate.embedding <=> p.embedding
-            LIMIT %s
-        ) q ON true
-        WHERE q.similarity >= 0.78
-    """
-
-
-def postgres_retrieval_features(block_keys: set[str]) -> dict[str, float]:
-    features = {"exact": 0.0, "lexical": 0.0, "trigram": 0.0, "vector": 0.0}
-    for key in block_keys:
-        if key.startswith("exact:"):
-            features["exact"] = max(features["exact"], 1.0)
-        elif key.startswith("lexical:fts:"):
-            features["lexical"] = max(features["lexical"], evidence_value(key, default=0.70))
-        elif key.startswith("trigram:title:"):
-            features["trigram"] = max(features["trigram"], evidence_value(key, default=0.45))
-        elif key.startswith("vector:cosine:"):
-            features["vector"] = max(features["vector"], evidence_value(key, default=0.78))
-    features["lexical"] = min(1.0, features["lexical"] * 1.4)
-    features["trigram"] = min(1.0, features["trigram"])
-    features["vector"] = min(1.0, features["vector"])
-    return features
-
-
-def evidence_value(key: str, *, default: float) -> float:
-    try:
-        return float(key.rsplit(":", 1)[1])
-    except ValueError:
-        return default
-
-
-def extracted_attribute_score(
-    left: dict[str, Any],
-    right: dict[str, Any],
-) -> tuple[float, str, list[str]]:
-    if not left or not right:
-        return 0.45, "unknown", []
-    positive = 0
-    comparable = 0
-    conflicts: list[str] = []
-    reasons: list[str] = []
-    for key in (
-        "brand",
-        "product_line",
-        "product_type",
-        "category",
-        "variant_name",
-        "color",
-        "size",
-        "scent",
-        "flavor",
-        "material",
-        "pack_count",
-        "model_number",
-    ):
-        left_value = normalize_text(left.get(key))
-        right_value = normalize_text(right.get(key))
-        if not left_value or not right_value:
-            continue
-        comparable += 1
-        if left_value == right_value:
-            positive += 1
-            reasons.append(f"llm_{key}_match:{left_value}")
-        elif key in {"variant_name", "color", "size", "scent", "flavor", "material", "pack_count", "model_number"}:
-            conflicts.append(f"llm_{key}_conflict")
-    if comparable == 0:
-        return 0.45, "unknown", reasons
-    score = positive / comparable
-    relation = "same_parent_different_variant" if conflicts and same_parent_attributes(left, right) else "unknown"
-    reasons.extend(conflicts)
-    return score, relation, reasons
-
-
-def same_parent_attributes(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    for key in ("brand", "product_line", "product_type"):
-        left_value = normalize_text(left.get(key))
-        right_value = normalize_text(right.get(key))
-        if left_value and right_value and left_value != right_value:
-            return False
-    return bool(normalize_text(left.get("product_line")) and normalize_text(right.get("product_line")))
-
-
 def run_pipeline(
     *,
     input_path: str | Path,
     output_dir: str | Path,
     config: PipelineConfig,
     limit: int | None = None,
+    dev: bool = False,
 ) -> dict[str, object]:
+    run_started_at = datetime.now(timezone.utc)
     started = perf_counter()
+    resolved_input_path = Path(input_path).resolve()
     output_path = prepare_output_dir(output_dir)
-    dedupe_pipeline = PostgresOpenAIPipeline()
+    dedupe_pipeline = DedupePipeline(dev=dev)
+    stage_timeline: list[dict[str, object]] = []
+
+    def run_stage(name: str, action, *, items: int = 0):
+        print(f"starting stage: {name}")
+        stage_started = perf_counter()
+        stage_started_at = datetime.now(timezone.utc)
+        try:
+            with dedupe_pipeline.metrics.stage(name, items=items):
+                return action()
+        finally:
+            stage_ended_at = datetime.now(timezone.utc)
+            stage_elapsed = perf_counter() - stage_started
+            stage_timeline.append(
+                {
+                    "name": name,
+                    "started_at_utc": stage_started_at.isoformat(),
+                    "ended_at_utc": stage_ended_at.isoformat(),
+                    "elapsed_seconds": round(stage_elapsed, 3),
+                }
+            )
+            print(f"finished stage: {name} ({stage_elapsed:.2f}s)")
+
+    normalize_hash = normalize_module_hash()
+    cache_key = normalization_cache_key(input_path=resolved_input_path, limit=limit, normalize_hash=normalize_hash)
+    cache_path = normalization_cache_dir() / f"{cache_key}.json"
+    normalization_signature = ""
+    cache_used = False
+    stage_cache_status: dict[str, dict[str, object]] = {
+        "normalize_and_load_postgres": {"used": 0, "path": str(cache_path), "key": cache_key},
+    }
 
     print(f"loading {input_path}")
-    with dedupe_pipeline.metrics.stage("load_rows"):
-        rows = load_rows(input_path, limit=limit)
+    dedupe_pipeline.dev_log("stage start: load_rows")
+
+    def load_rows_action():
+        return load_rows(input_path, limit=limit)
+
+    rows = run_stage("load_rows", load_rows_action)
     print(f"loaded {len(rows):,} rows")
 
     print("normalizing and loading Postgres")
-    with dedupe_pipeline.metrics.stage("normalize_and_load_postgres", items=len(rows)):
-        products = dedupe_pipeline.normalize_rows(rows)
+    dedupe_pipeline.dev_log("stage start: normalize_and_load_postgres")
+
+    def normalize_and_load_action():
+        nonlocal cache_used
+        cached_products = read_normalization_cache(cache_path)
+        if cached_products is not None:
+            products = cached_products
+            cache_used = True
+            print(f"loaded {len(products):,} normalized products from cache")
+            with dedupe_pipeline.connect() as conn:
+                dedupe_pipeline.reset_database(conn)
+                dedupe_pipeline.insert_products(conn, products)
+                dedupe_pipeline.insert_exact_keys(conn, products)
+        else:
+            products = dedupe_pipeline.normalize_rows(rows)
+            write_normalization_cache(
+                cache_path,
+                products=products,
+                metadata={
+                    "cache_schema_version": 1,
+                    "input_path": str(resolved_input_path),
+                    "limit": limit,
+                    "normalize_hash": normalize_hash,
+                },
+            )
+            print(f"saved normalized cache: {cache_path}")
+        return products
+
+    products = run_stage("normalize_and_load_postgres", normalize_and_load_action, items=len(rows))
+    normalization_signature = product_signature(products)
     print(f"normalized {len(products):,} products")
     id_to_index = {product.source_id: index for index, product in enumerate(products)}
 
+    retrieval_env = stage_env_fingerprint(
+        [
+            "OPENAI_EMBEDDING_MODEL",
+            "OPENAI_EXTRACTION_MODEL",
+            "CARTSY_EMBEDDING_BATCH_SIZE",
+            "CARTSY_LLM_EXTRACTION_LIMIT",
+            "CARTSY_FTS_CANDIDATES",
+            "CARTSY_TRIGRAM_CANDIDATES",
+            "CARTSY_TRIGRAM_MIN_SIMILARITY",
+            "CARTSY_VECTOR_CANDIDATES",
+            "CARTSY_EMBEDDING_DIMENSIONS",
+        ]
+    )
+    retrieval_code = code_fingerprint("pipeline.py", "scoring.py", "normalize.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
+    retrieval_key = retrieval_cache_key(
+        normalization_key=cache_key,
+        config=config,
+        env=retrieval_env,
+        code=retrieval_code,
+    )
+    retrieval_path = cache_path_for("retrieve_candidates", retrieval_key)
+    stage_cache_status["retrieve_candidates"] = {"used": 0, "path": str(retrieval_path), "key": retrieval_key}
+
     print("retrieving candidate pairs")
-    with dedupe_pipeline.metrics.stage("retrieve_candidates", items=len(products)):
+    dedupe_pipeline.dev_log("stage start: retrieve_candidates")
+
+    def retrieve_candidates_action():
+        cached = read_stage_cache(retrieval_path)
+        if cached is not None:
+            payload = cached["payload"]
+            pair_blocks = pair_blocks_from_records(payload.get("pair_blocks") or [])
+            blocking_stats = dict(payload.get("blocking_stats") or {})
+            extracted_by_source_id = dict(payload.get("extracted_by_source_id") or {})
+            dedupe_pipeline.extracted_by_source_id = extracted_by_source_id
+            dedupe_pipeline.embedding_count = int(payload.get("embedding_count") or 0)
+            dedupe_pipeline.extraction_count = int(payload.get("extraction_count") or 0)
+            products_by_id = {product.source_id: product for product in products}
+            for source_id, attrs in extracted_by_source_id.items():
+                product = products_by_id.get(source_id)
+                if product is not None:
+                    product.extracted_attributes = dict(attrs or {})
+            stage_cache_status["retrieve_candidates"]["used"] = 1
+            return pair_blocks, blocking_stats
+
         pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(products, config=config)
+        write_stage_cache(
+            retrieval_path,
+            metadata={
+                "stage": "retrieve_candidates",
+                "normalization_key": cache_key,
+                "normalization_signature": normalization_signature,
+                "config": asdict(config),
+                "env": retrieval_env,
+                "code": retrieval_code,
+            },
+            payload={
+                "pair_blocks": pair_blocks_to_records(pair_blocks),
+                "blocking_stats": blocking_stats,
+                "extracted_by_source_id": dedupe_pipeline.extracted_by_source_id,
+                "embedding_count": dedupe_pipeline.embedding_count,
+                "extraction_count": dedupe_pipeline.extraction_count,
+            },
+        )
+        return pair_blocks, blocking_stats
+
+    pair_blocks, blocking_stats = run_stage("retrieve_candidates", retrieve_candidates_action, items=len(products))
     print(f"generated {len(pair_blocks):,} candidate pairs")
 
-    print("scoring candidate pairs")
-    with dedupe_pipeline.metrics.stage("score_candidates", items=len(pair_blocks)):
-        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(products, pair_blocks, config=config)
+    scoring_code = code_fingerprint("pipeline.py", "scoring.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
+    scoring_key = scoring_cache_key(
+        retrieval_key=retrieval_key,
+        config=config,
+        code=scoring_code,
+    )
+    scoring_path = cache_path_for("score_candidates", scoring_key)
+    stage_cache_status["score_candidates"] = {"used": 0, "path": str(scoring_path), "key": scoring_key}
 
-    with dedupe_pipeline.metrics.stage("cluster", items=len(candidate_pairs)):
+    print("scoring candidate pairs")
+    dedupe_pipeline.dev_log("stage start: score_candidates")
+
+    def score_candidates_action():
+        cached = read_stage_cache(scoring_path)
+        if cached is not None:
+            payload = cached["payload"]
+            stage_cache_status["score_candidates"]["used"] = 1
+            return (
+                candidate_pairs_from_records(payload.get("candidate_pairs") or []),
+                int(payload.get("scored_candidate_pairs") or 0),
+            )
+
+        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(products, pair_blocks, config=config)
+        write_stage_cache(
+            scoring_path,
+            metadata={
+                "stage": "score_candidates",
+                "retrieval_key": retrieval_key,
+                "normalization_signature": normalization_signature,
+                "config": asdict(config),
+                "code": scoring_code,
+            },
+            payload={
+                "candidate_pairs": candidate_pairs_to_records(candidate_pairs),
+                "scored_candidate_pairs": scored_candidate_pairs,
+            },
+        )
+        return candidate_pairs, scored_candidate_pairs
+
+    candidate_pairs, scored_candidate_pairs = run_stage("score_candidates", score_candidates_action, items=len(pair_blocks))
+
+    clustering_code = code_fingerprint("pipeline.py", "clustering.py")
+    cluster_key = clustering_cache_key(scoring_key=scoring_key, code=clustering_code)
+    cluster_path = cache_path_for("cluster", cluster_key)
+    stage_cache_status["cluster"] = {"used": 0, "path": str(cluster_path), "key": cluster_key}
+
+    def cluster_action():
+        cached = read_stage_cache(cluster_path)
+        if cached is not None:
+            payload = cached["payload"]
+            clusters = dict(payload.get("clusters") or {})
+            cluster_stats = {
+                str(key): int(value)
+                for key, value in dict(payload.get("cluster_stats") or {}).items()
+            }
+            source_to_cluster = {
+                str(key): str(value)
+                for key, value in dict(payload.get("source_to_cluster") or {}).items()
+            }
+            stage_cache_status["cluster"]["used"] = 1
+            return clusters, cluster_stats, source_to_cluster
+
+        dedupe_pipeline.dev_log("stage start: cluster")
         clusters, cluster_stats = dedupe_pipeline.build_clusters(products, candidate_pairs, id_to_index)
         source_to_cluster = invert_clusters(clusters)
+        write_stage_cache(
+            cluster_path,
+            metadata={
+                "stage": "cluster",
+                "scoring_key": scoring_key,
+                "normalization_signature": normalization_signature,
+                "code": clustering_code,
+            },
+            payload={
+                "clusters": clusters,
+                "cluster_stats": cluster_stats,
+                "source_to_cluster": source_to_cluster,
+            },
+        )
+        return clusters, cluster_stats, source_to_cluster
+
+    clusters, cluster_stats, source_to_cluster = run_stage("cluster", cluster_action, items=len(candidate_pairs))
     elapsed_seconds = perf_counter() - started
     report = dedupe_pipeline.build_summary_report(
         products=products,
@@ -959,13 +921,25 @@ def run_pipeline(
     )
     report["run_id"] = output_path.name
     report["run_output_dir"] = str(output_path)
+    report["normalization_cache"] = {
+        "used": int(cache_used),
+        "path": str(cache_path),
+        "normalize_hash": normalize_hash,
+    }
+    report["stage_caches"] = stage_cache_status
+    report["stage_timeline"] = stage_timeline
+    report["run_timestamps"] = {
+        "started_at_utc": run_started_at.isoformat(),
+    }
     report["metrics"] = dedupe_pipeline.metrics.as_report(
         embedding_model=dedupe_pipeline.embedding_model,
         extraction_model=dedupe_pipeline.extraction_model,
         input_records=len(products),
         total_elapsed_seconds=elapsed_seconds,
     )
-    with dedupe_pipeline.metrics.stage("write_outputs", items=len(products)):
+
+    def write_outputs_action():
+        dedupe_pipeline.dev_log("stage start: write_outputs")
         write_outputs(
             output_path=output_path,
             products=products,
@@ -976,8 +950,13 @@ def run_pipeline(
             near_miss_limit=config.near_miss_limit,
             sample_pair_limit=config.sample_pair_limit,
         )
+
+    run_stage("write_outputs", write_outputs_action, items=len(products))
     elapsed_seconds = perf_counter() - started
     report["elapsed_seconds"] = round(elapsed_seconds, 3)
+    run_ended_at = datetime.now(timezone.utc)
+    report["run_timestamps"]["ended_at_utc"] = run_ended_at.isoformat()
+    report["run_timestamps"]["elapsed_seconds"] = round(elapsed_seconds, 3)
     report["metrics"] = dedupe_pipeline.metrics.as_report(
         embedding_model=dedupe_pipeline.embedding_model,
         extraction_model=dedupe_pipeline.extraction_model,
@@ -988,18 +967,12 @@ def run_pipeline(
     return report
 
 
-def invert_clusters(clusters: dict[str, dict[str, object]]) -> dict[str, str]:
-    source_to_cluster: dict[str, str] = {}
-    for dedupe_id, cluster in clusters.items():
-        for source_id in cluster["source_ids"]:
-            source_to_cluster[str(source_id)] = dedupe_id
-    return source_to_cluster
-
-
 __all__ = [
-    "PostgresOpenAIPipeline",
+    "DedupePipeline",
     "ExtractedAttributes",
+    "RunMetrics",
     "embedding_text",
+    "extracted_attribute_score",
     "postgres_retrieval_features",
     "run_pipeline",
 ]

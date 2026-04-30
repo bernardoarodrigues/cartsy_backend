@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run = subparsers.add_parser("run", help="Ingest, normalize, dedupe, cluster, and report.")
-    run.add_argument("--input", required=True, help="Input product CSV path.")
+    run.add_argument("--input", default="data/products.csv", help="Input product CSV path.")
     run.add_argument(
         "--output",
         default="outputs",
@@ -32,17 +32,26 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--max-block-size",
         type=parse_optional_int,
-        default=None,
-        help="Optional max block size (default: none).",
+        default=PipelineConfig.max_block_size,
+        help=f"Optional max block size (default: {PipelineConfig.max_block_size}).",
     )
     run.add_argument(
         "--max-candidate-pairs",
         type=parse_optional_int,
-        default=None,
-        help="Maximum candidate pairs to collect. Omit or use none/null/unlimited for uncapped.",
+        default=PipelineConfig.max_candidate_pairs,
+        help=(
+            "Maximum candidate pairs to collect "
+            f"(default: {PipelineConfig.max_candidate_pairs:,}). "
+            "Use none/null/unlimited for uncapped."
+        ),
     )
     run.add_argument("--near-miss-limit", type=int, default=25_000)
     run.add_argument("--limit", type=int, default=None, help="Optional row limit for smoke tests.")
+    run.add_argument(
+        "--dev",
+        action="store_true",
+        help="Print per-stage debug logs and show progress bars during pipeline execution.",
+    )
 
     search = subparsers.add_parser("search", help="Search product assignments in a completed run.")
     search.add_argument("query", help="Search text.")
@@ -107,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=resolve_run_output_dir(Path(args.output)),
                 config=config,
                 limit=args.limit,
+                dev=args.dev,
             )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
