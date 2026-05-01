@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from cartsy_dedupe.clustering import build_clusters
 from cartsy_dedupe.config import PipelineConfig
+from cartsy_dedupe.features import build_pair_features
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.reporting import build_summary_report
@@ -83,6 +84,23 @@ except ImportError:  # pragma: no cover
 T = TypeVar("T")
 PairBlocks = dict[tuple[int, int], set[str]]
 Clusters = dict[str, dict[str, object]]
+
+
+def cosine_similarity(left: Sequence[float] | None, right: Sequence[float] | None) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = 0.0
+    left_norm = 0.0
+    right_norm = 0.0
+    for left_value, right_value in zip(left, right, strict=True):
+        left_float = float(left_value)
+        right_float = float(right_value)
+        dot += left_float * right_float
+        left_norm += left_float * left_float
+        right_norm += right_float * right_float
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    return max(0.0, min(1.0, dot / ((left_norm**0.5) * (right_norm**0.5))))
 
 
 def env_flag(name: str, default: bool) -> bool:
@@ -224,8 +242,14 @@ class DedupePipeline:
         pair_blocks: PairBlocks,
         *,
         config: PipelineConfig,
+        normalization_key: str | None = None,
     ) -> tuple[list[CandidatePair], int]:
         candidate_pairs: list[CandidatePair] = []
+        semantic_similarities = self.compute_pair_semantic_similarities(
+            products,
+            pair_blocks,
+            normalization_key=normalization_key,
+        )
         pair_items = pair_blocks.items()
         for pair_number, ((left_index, right_index), block_keys) in enumerate(
             self.progress(pair_items, total=len(pair_blocks), desc="score pairs", unit="pair"),
@@ -233,13 +257,64 @@ class DedupePipeline:
         ):
             left = products[left_index]
             right = products[right_index]
-            pair = self.score_postgres_pair(left, right, block_keys, config)
+            pair = self.score_postgres_pair(
+                left,
+                right,
+                block_keys,
+                config,
+                semantic_sim=semantic_similarities.get((left_index, right_index), 0.0),
+            )
             if pair.decision == "no_merge" and pair.score < config.near_miss_threshold:
                 continue
             candidate_pairs.append(pair)
             if pair_number % 100_000 == 0:
                 print(f"scored {pair_number:,} candidate pairs; kept {len(candidate_pairs):,}")
         return candidate_pairs, len(pair_blocks)
+
+    def compute_pair_semantic_similarities(
+        self,
+        products: list[NormalizedProduct],
+        pair_blocks: PairBlocks,
+        *,
+        normalization_key: str | None = None,
+    ) -> dict[tuple[int, int], float]:
+        if not pair_blocks:
+            return {}
+        pair_product_indexes = {index for pair in pair_blocks for index in pair}
+        self.dev_log(f"embedding {len(pair_product_indexes):,} candidate-pair products for dense semantic features")
+        with self.connect() as conn:
+            self.embed_products(
+                conn,
+                only_indexes=pair_product_indexes,
+                normalization_key=normalization_key,
+                force=True,
+            )
+            embeddings = self.fetch_embeddings_by_index(conn, pair_product_indexes)
+        missing = len(pair_product_indexes - set(embeddings))
+        if missing:
+            self.dev_log(f"semantic features missing embeddings for {missing:,} candidate-pair products")
+        similarities: dict[tuple[int, int], float] = {}
+        for left_index, right_index in pair_blocks:
+            left_embedding = embeddings.get(left_index)
+            right_embedding = embeddings.get(right_index)
+            similarities[(left_index, right_index)] = cosine_similarity(left_embedding, right_embedding)
+        return similarities
+
+    def fetch_embeddings_by_index(self, conn, indexes: set[int]) -> dict[int, list[float]]:
+        if not indexes:
+            return {}
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT source_index, embedding
+                FROM cartsy_products
+                WHERE source_index = ANY(%s)
+                  AND embedding IS NOT NULL
+                """,
+                (sorted(indexes),),
+            )
+            rows = cur.fetchall()
+        return {int(index): list(embedding) for index, embedding in rows}
 
     def build_clusters(
         self,
@@ -506,8 +581,9 @@ class DedupePipeline:
         only_indexes: set[int] | None = None,
         exclude_indexes: set[int] | None = None,
         normalization_key: str | None = None,
+        force: bool = False,
     ) -> None:
-        if self.vector_candidates <= 0:
+        if self.vector_candidates <= 0 and not force:
             self.dev_log("skipping embedding generation because CARTSY_VECTOR_CANDIDATES <= 0")
             return
         if OpenAI is None:
@@ -1002,9 +1078,12 @@ class DedupePipeline:
         right: NormalizedProduct,
         block_keys: set[str],
         config: PipelineConfig,
+        *,
+        semantic_sim: float = 0.0,
     ) -> CandidatePair:
         rule_result = score_pair(left, right, merge_threshold=config.merge_threshold)
         retrieval = postgres_retrieval_features(block_keys)
+        pair_features = build_pair_features(left, right, block_keys, semantic_sim=semantic_sim)
         attr_score, attr_relation, attr_reasons = extracted_attribute_score(
             self.extracted_by_source_id.get(left.source_id, {}),
             self.extracted_by_source_id.get(right.source_id, {}),
@@ -1040,6 +1119,7 @@ class DedupePipeline:
             f"fts:{retrieval['lexical']:.2f}",
             f"trigram:{retrieval['trigram']:.2f}",
             f"vector:{retrieval['vector']:.2f}",
+            f"semantic:{semantic_sim:.2f}",
             f"llm_attrs:{attr_score:.2f}",
         ]
         if rule_result.explanation:
@@ -1051,8 +1131,10 @@ class DedupePipeline:
             "postgres_fts": retrieval["lexical"],
             "postgres_trigram": retrieval["trigram"],
             "postgres_vector": retrieval["vector"],
+            "semantic_sim": semantic_sim,
             "llm_attributes": attr_score,
         }
+        feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})
         return CandidatePair(
             product_a_id=left.source_id,
             product_b_id=right.source_id,
@@ -1254,7 +1336,12 @@ def run_pipeline(
                 int(payload.get("scored_candidate_pairs") or 0),
             )
 
-        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(products, pair_blocks, config=config)
+        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(
+            products,
+            pair_blocks,
+            config=config,
+            normalization_key=cache_key,
+        )
         write_stage_cache(
             scoring_path,
             metadata={

@@ -5,6 +5,7 @@ from pathlib import Path
 from cartsy_dedupe.pipeline import (
     DedupePipeline,
     RunMetrics,
+    cosine_similarity,
     embedding_text,
     extracted_attribute_score,
     postgres_retrieval_features,
@@ -126,6 +127,12 @@ def test_vector_gating_can_expand_pool_with_neighbors(monkeypatch) -> None:
     assert anchors == {2, 3}
     assert pool == {2, 3, 4}
     assert stats["vector_indexes_skipped_weak_signal"] == 1
+
+
+def test_cosine_similarity_handles_dense_semantic_feature() -> None:
+    assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == 1.0
+    assert cosine_similarity([1.0, 0.0], [0.0, 1.0]) == 0.0
+    assert cosine_similarity(None, [0.0, 1.0]) == 0.0
 
 
 class _FakeCursor:
