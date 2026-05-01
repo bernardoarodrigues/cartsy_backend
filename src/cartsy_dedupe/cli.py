@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output directory root. Run artifacts go under run_<timestamp>/ unless path already starts with run_.",
     )
     run.add_argument("--merge-threshold", type=float, default=0.84)
+    run.add_argument(
+        "--ml-model",
+        default=os.getenv("CARTSY_ML_MODEL_PATH"),
+        help="Path to a cartsy_logreg.joblib bundle from `cartsy-dedupe train-model`.",
+    )
     run.add_argument("--near-miss-threshold", type=float, default=0.70)
     run.add_argument(
         "--max-block-size",
@@ -129,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         config = PipelineConfig(
             merge_threshold=args.merge_threshold,
+            ml_model_path=args.ml_model,
             near_miss_threshold=args.near_miss_threshold,
             max_block_size=args.max_block_size,
             max_candidate_pairs=args.max_candidate_pairs,

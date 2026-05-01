@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from cartsy_dedupe.clustering import build_clusters
 from cartsy_dedupe.config import PipelineConfig
-from cartsy_dedupe.features import build_pair_features
+from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, feature_vector, hard_contradiction_features
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.reporting import build_summary_report
@@ -81,6 +81,11 @@ try:  # pragma: no cover - external package availability is covered by smoke run
 except ImportError:  # pragma: no cover
     OpenAI = None
 
+try:  # pragma: no cover - import failure is exercised only in incomplete envs.
+    from joblib import load as joblib_load
+except ImportError:  # pragma: no cover
+    joblib_load = None
+
 T = TypeVar("T")
 PairBlocks = dict[tuple[int, int], set[str]]
 Clusters = dict[str, dict[str, object]]
@@ -142,12 +147,50 @@ class DedupePipeline:
         self.vector_include_neighbors = env_flag("CARTSY_VECTOR_INCLUDE_NEIGHBORS", True)
         self.embedding_dimensions = int(os.getenv("CARTSY_EMBEDDING_DIMENSIONS", "1536"))
         self.extracted_by_source_id: dict[str, dict[str, Any]] = {}
+        self.ml_model_bundle: dict[str, Any] | None = None
         self.embedding_count = 0
         self.embedding_cache_hit_count = 0
         self.extraction_count = 0
         self.metrics = RunMetrics()
         self.dev = dev
         self.retrieval_layer_cache_status: dict[str, dict[str, object]] = {}
+
+    def load_ml_model(self, model_path: str | Path | None) -> None:
+        if model_path is None:
+            raise RuntimeError(
+                "The dedupe pipeline now requires a logistic-regression model. "
+                "Train one with `cartsy-dedupe train-model ...` and pass `--ml-model`, "
+                "or set CARTSY_ML_MODEL_PATH."
+            )
+        if joblib_load is None:
+            raise RuntimeError("Install joblib before loading a logistic-regression model.")
+        resolved = Path(model_path)
+        if not resolved.is_file():
+            raise RuntimeError(f"ML model not found: {resolved}")
+        bundle = joblib_load(resolved)
+        feature_columns = list(bundle.get("feature_columns") or [])
+        missing = [column for column in feature_columns if column not in DEFAULT_FEATURE_COLUMNS]
+        if not feature_columns or missing:
+            raise RuntimeError(f"ML model has an incompatible feature contract: missing/unknown columns={missing}")
+        self.ml_model_bundle = bundle
+
+    def predict_ml_score(self, features: dict[str, float]) -> float:
+        if self.ml_model_bundle is None:
+            raise RuntimeError(
+                "Logistic-regression model is not loaded. Pass --ml-model or set CARTSY_ML_MODEL_PATH."
+            )
+        columns = list(self.ml_model_bundle.get("feature_columns") or DEFAULT_FEATURE_COLUMNS)
+        vector = [feature_vector(features, columns)]
+        scaler = self.ml_model_bundle.get("scaler")
+        if scaler is not None:
+            vector = scaler.transform(vector)
+        model = self.ml_model_bundle["model"]
+        return float(model.predict_proba(vector)[0][1])
+
+    def ml_threshold(self, fallback: float) -> float:
+        if self.ml_model_bundle is None:
+            return fallback
+        return float(self.ml_model_bundle.get("threshold", fallback))
 
     def dev_log(self, message: str) -> None:
         if self.dev:
@@ -203,10 +246,10 @@ class DedupePipeline:
                 retrieval_env=retrieval_env,
                 retrieval_code=retrieval_code,
             )
-            self.dev_log("running candidate attribute extraction")
-            self.extract_candidate_attributes(conn, pair_blocks)
-            self.dev_log("loading extracted attributes into normalized products")
-            self.load_extracted_attributes(conn, products)
+            # LLM attribute extraction is intentionally disabled for the ML-first
+            # scorer. Variant and contradiction handling now comes from explicit
+            # pair features plus the hard contradiction gate.
+            self.extracted_by_source_id = {}
         stats = {
             "candidate_cap_reached": int(config.max_candidate_pairs is not None and len(pair_blocks) >= config.max_candidate_pairs),
             "exact_pairs": layer_counts.get("exact", 0),
@@ -349,7 +392,8 @@ class DedupePipeline:
             "database": "Postgres with pg_trgm, full-text search, and pgvector",
             "embedding_model": self.embedding_model,
             "extraction_model": self.extraction_model,
-            "cascade": "exact keys -> full-text retrieval -> trigram retrieval -> vector retrieval -> explainable rerank",
+            "llm_attribute_extraction": "disabled",
+            "cascade": "exact keys -> full-text retrieval -> trigram retrieval -> vector retrieval -> dense pair embeddings -> logistic regression",
         }
         return report
 
@@ -1088,32 +1132,30 @@ class DedupePipeline:
             self.extracted_by_source_id.get(left.source_id, {}),
             self.extracted_by_source_id.get(right.source_id, {}),
         )
-        score = (
-            0.54 * rule_result.score
-            + 0.14 * retrieval["exact"]
-            + 0.10 * retrieval["lexical"]
-            + 0.08 * retrieval["trigram"]
-            + 0.10 * retrieval["vector"]
-            + 0.04 * attr_score
-        )
-        if retrieval["exact"] >= 1.0:
-            score = max(score, 0.97)
-        elif retrieval["vector"] >= 0.90 and retrieval["lexical"] >= 0.70 and not rule_result.auto_blocked:
-            score = max(score, 0.86)
+        ml_score = self.predict_ml_score(pair_features)
+        threshold = self.ml_threshold(config.merge_threshold)
 
-        relation = "exact_match"
-        if rule_result.auto_blocked or attr_relation == "same_parent_different_variant":
+        hard_contradiction = (
+            rule_result.auto_blocked
+            or attr_relation == "same_parent_different_variant"
+            or hard_contradiction_features(pair_features)
+        )
+        relation = "same_parent_different_variant" if hard_contradiction else "exact_match"
+        score = ml_score
+        if hard_contradiction:
             relation = "same_parent_different_variant"
-            score = min(score, config.merge_threshold - 0.01)
-        elif score < config.merge_threshold and score >= config.near_miss_threshold:
+            score = min(score, threshold - 0.01)
+        elif score < threshold and score >= config.near_miss_threshold:
             relation = "similar_related_product"
         elif score < config.near_miss_threshold:
             relation = "no_match"
 
         score = max(0.0, min(1.0, score))
-        decision = "merge" if relation == "exact_match" and score >= config.merge_threshold else "no_merge"
+        decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
         explanations = [
             f"relation:{relation}",
+            f"ml_score:{ml_score:.2f}",
+            f"ml_threshold:{threshold:.2f}",
             f"rule_score:{rule_result.score:.2f}",
             f"exact:{retrieval['exact']:.2f}",
             f"fts:{retrieval['lexical']:.2f}",
@@ -1133,6 +1175,9 @@ class DedupePipeline:
             "postgres_vector": retrieval["vector"],
             "semantic_sim": semantic_sim,
             "llm_attributes": attr_score,
+            "ml_score": ml_score,
+            "ml_threshold": threshold,
+            "hard_contradiction": float(hard_contradiction),
         }
         feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})
         return CandidatePair(
@@ -1159,6 +1204,7 @@ def run_pipeline(
     resolved_input_path = Path(input_path).resolve()
     output_path = prepare_output_dir(output_dir)
     dedupe_pipeline = DedupePipeline(dev=dev)
+    dedupe_pipeline.load_ml_model(config.ml_model_path)
     stage_timeline: list[dict[str, object]] = []
 
     def run_stage(name: str, action, *, items: int = 0):
@@ -1189,6 +1235,11 @@ def run_pipeline(
     stage_cache_status: dict[str, dict[str, object]] = {
         "normalize_and_load_postgres": {"used": 0, "path": str(cache_path), "key": cache_key},
     }
+    stage_caching_enabled = False
+    stage_cache_status["stage_caching"] = {
+        "enabled": int(stage_caching_enabled),
+        "reason": "disabled while logistic-regression scorer and eval artifacts are the source of truth",
+    }
 
     print(f"loading {input_path}")
     dedupe_pipeline.dev_log("stage start: load_rows")
@@ -1204,7 +1255,7 @@ def run_pipeline(
 
     def normalize_and_load_action():
         nonlocal cache_used
-        cached_products = read_normalization_cache(cache_path)
+        cached_products = read_normalization_cache(cache_path) if stage_caching_enabled else None
         if cached_products is not None:
             products = cached_products
             cache_used = True
@@ -1215,17 +1266,18 @@ def run_pipeline(
                 dedupe_pipeline.insert_exact_keys(conn, products)
         else:
             products = dedupe_pipeline.normalize_rows(rows)
-            write_normalization_cache(
-                cache_path,
-                products=products,
-                metadata={
-                    "cache_schema_version": 1,
-                    "input_path": str(resolved_input_path),
-                    "limit": limit,
-                    "normalize_hash": normalize_hash,
-                },
-            )
-            print(f"saved normalized cache: {cache_path}")
+            if stage_caching_enabled:
+                write_normalization_cache(
+                    cache_path,
+                    products=products,
+                    metadata={
+                        "cache_schema_version": 1,
+                        "input_path": str(resolved_input_path),
+                        "limit": limit,
+                        "normalize_hash": normalize_hash,
+                    },
+                )
+                print(f"saved normalized cache: {cache_path}")
         return products
 
     products = run_stage("normalize_and_load_postgres", normalize_and_load_action, items=len(rows))
@@ -1264,7 +1316,7 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: retrieve_candidates")
 
     def retrieve_candidates_action():
-        cached = read_stage_cache(retrieval_path)
+        cached = read_stage_cache(retrieval_path) if stage_caching_enabled else None
         if cached is not None:
             payload = cached["payload"]
             pair_blocks = pair_blocks_from_records(payload.get("pair_blocks") or [])
@@ -1285,27 +1337,28 @@ def run_pipeline(
             products,
             config=config,
             normalization_key=cache_key,
-            retrieval_env=retrieval_env,
-            retrieval_code=retrieval_code,
+            retrieval_env=retrieval_env if stage_caching_enabled else None,
+            retrieval_code=retrieval_code if stage_caching_enabled else None,
         )
-        write_stage_cache(
-            retrieval_path,
-            metadata={
-                "stage": "retrieve_candidates",
-                "normalization_key": cache_key,
-                "normalization_signature": normalization_signature,
-                "config": asdict(config),
-                "env": retrieval_env,
-                "code": retrieval_code,
-            },
-            payload={
-                "pair_blocks": pair_blocks_to_records(pair_blocks),
-                "blocking_stats": blocking_stats,
-                "extracted_by_source_id": dedupe_pipeline.extracted_by_source_id,
-                "embedding_count": dedupe_pipeline.embedding_count,
-                "extraction_count": dedupe_pipeline.extraction_count,
-            },
-        )
+        if stage_caching_enabled:
+            write_stage_cache(
+                retrieval_path,
+                metadata={
+                    "stage": "retrieve_candidates",
+                    "normalization_key": cache_key,
+                    "normalization_signature": normalization_signature,
+                    "config": asdict(config),
+                    "env": retrieval_env,
+                    "code": retrieval_code,
+                },
+                payload={
+                    "pair_blocks": pair_blocks_to_records(pair_blocks),
+                    "blocking_stats": blocking_stats,
+                    "extracted_by_source_id": dedupe_pipeline.extracted_by_source_id,
+                    "embedding_count": dedupe_pipeline.embedding_count,
+                    "extraction_count": dedupe_pipeline.extraction_count,
+                },
+            )
         stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
         return pair_blocks, blocking_stats
 
@@ -1327,7 +1380,7 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: score_candidates")
 
     def score_candidates_action():
-        cached = read_stage_cache(scoring_path)
+        cached = read_stage_cache(scoring_path) if stage_caching_enabled else None
         if cached is not None:
             payload = cached["payload"]
             stage_cache_status["score_candidates"]["used"] = 1
@@ -1342,20 +1395,21 @@ def run_pipeline(
             config=config,
             normalization_key=cache_key,
         )
-        write_stage_cache(
-            scoring_path,
-            metadata={
-                "stage": "score_candidates",
-                "retrieval_key": retrieval_key,
-                "normalization_signature": normalization_signature,
-                "config": asdict(config),
-                "code": scoring_code,
-            },
-            payload={
-                "candidate_pairs": candidate_pairs_to_records(candidate_pairs),
-                "scored_candidate_pairs": scored_candidate_pairs,
-            },
-        )
+        if stage_caching_enabled:
+            write_stage_cache(
+                scoring_path,
+                metadata={
+                    "stage": "score_candidates",
+                    "retrieval_key": retrieval_key,
+                    "normalization_signature": normalization_signature,
+                    "config": asdict(config),
+                    "code": scoring_code,
+                },
+                payload={
+                    "candidate_pairs": candidate_pairs_to_records(candidate_pairs),
+                    "scored_candidate_pairs": scored_candidate_pairs,
+                },
+            )
         return candidate_pairs, scored_candidate_pairs
 
     candidate_pairs, scored_candidate_pairs = run_stage("score_candidates", score_candidates_action, items=len(pair_blocks))
@@ -1366,7 +1420,7 @@ def run_pipeline(
     stage_cache_status["cluster"] = {"used": 0, "path": str(cluster_path), "key": cluster_key}
 
     def cluster_action():
-        cached = read_stage_cache(cluster_path)
+        cached = read_stage_cache(cluster_path) if stage_caching_enabled else None
         if cached is not None:
             payload = cached["payload"]
             clusters = dict(payload.get("clusters") or {})
@@ -1384,20 +1438,21 @@ def run_pipeline(
         dedupe_pipeline.dev_log("stage start: cluster")
         clusters, cluster_stats = dedupe_pipeline.build_clusters(products, candidate_pairs, id_to_index)
         source_to_cluster = invert_clusters(clusters)
-        write_stage_cache(
-            cluster_path,
-            metadata={
-                "stage": "cluster",
-                "scoring_key": scoring_key,
-                "normalization_signature": normalization_signature,
-                "code": clustering_code,
-            },
-            payload={
-                "clusters": clusters,
-                "cluster_stats": cluster_stats,
-                "source_to_cluster": source_to_cluster,
-            },
-        )
+        if stage_caching_enabled:
+            write_stage_cache(
+                cluster_path,
+                metadata={
+                    "stage": "cluster",
+                    "scoring_key": scoring_key,
+                    "normalization_signature": normalization_signature,
+                    "code": clustering_code,
+                },
+                payload={
+                    "clusters": clusters,
+                    "cluster_stats": cluster_stats,
+                    "source_to_cluster": source_to_cluster,
+                },
+            )
         return clusters, cluster_stats, source_to_cluster
 
     clusters, cluster_stats, source_to_cluster = run_stage("cluster", cluster_action, items=len(candidate_pairs))

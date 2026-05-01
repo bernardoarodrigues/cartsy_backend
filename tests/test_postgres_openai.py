@@ -17,6 +17,8 @@ from cartsy_dedupe.utils.pipeline_cache import (
     embedding_text_hash,
     write_embedding_cache,
 )
+from cartsy_dedupe.config import PipelineConfig
+from cartsy_dedupe.normalize import normalize_row
 
 
 def test_postgres_retrieval_features_parse_evidence_scores() -> None:
@@ -133,6 +135,59 @@ def test_cosine_similarity_handles_dense_semantic_feature() -> None:
     assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == 1.0
     assert cosine_similarity([1.0, 0.0], [0.0, 1.0]) == 0.0
     assert cosine_similarity(None, [0.0, 1.0]) == 0.0
+
+
+class _FixedModel:
+    def __init__(self, score: float) -> None:
+        self.score = score
+
+    def predict_proba(self, rows):
+        return [[1.0 - self.score, self.score] for _row in rows]
+
+
+def _product(**overrides: str):
+    row = {
+        "id": "1",
+        "prod_name": "Cetaphil Locao Hidratante 473ml",
+        "brand": "Cetaphil",
+        "category": "Beleza>Pele>Hidratantes",
+        "description": '["hidratante corporal"]',
+        "specs": "{}",
+        "img_links": "",
+        "url": "",
+        "created_at": "",
+        "updated_at": "",
+        "retailer": "amazon_br",
+        "price": "6790",
+        "sku": "SKU-1",
+        "dimension": "473ml",
+    }
+    row.update(overrides)
+    return normalize_row(row)
+
+
+def test_score_postgres_pair_uses_logistic_model_and_hard_contradiction() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.95),
+        "feature_columns": ["brand_exact", "title_token_set", "semantic_sim", "size_conflict"],
+        "threshold": 0.84,
+    }
+    left = _product(id="1", sku="SHARED", dimension="200ml", prod_name="Cetaphil Locao 200ml")
+    right = _product(id="2", sku="SHARED", dimension="473ml", prod_name="Cetaphil Locao 473ml")
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"exact:sku:SHARED"},
+        PipelineConfig(merge_threshold=0.84),
+        semantic_sim=0.97,
+    )
+
+    assert pair.decision == "no_merge"
+    assert pair.score < 0.84
+    assert pair.feature_scores["ml_score"] == 0.95
+    assert pair.feature_scores["hard_contradiction"] == 1.0
 
 
 class _FakeCursor:
