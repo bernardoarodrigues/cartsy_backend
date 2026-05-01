@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115.0",
+  "numpy>=2.0.0",
   "openai>=1.56.0",
   "pgvector>=0.3.6",
   "polars>=0.20.0",
@@ -28,6 +29,7 @@ dev = [
 
 [project.scripts]
 cartsy-dedupe = "cartsy_dedupe.cli:main"
+cartsy-embed-cache = "cartsy_dedupe.embed_cache:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,7 +10,7 @@ from typing import Any
 from cartsy_dedupe.config import PipelineConfig
 from cartsy_dedupe.schemas import CandidatePair, NormalizedProduct
 
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 
 
 def pipeline_cache_root() -> Path:
@@ -25,7 +25,14 @@ def normalization_cache_dir() -> Path:
 
 
 def stage_cache_dir(stage_name: str) -> Path:
-    return pipeline_cache_root() / stage_name
+    path = pipeline_cache_root() / stage_name
+    if stage_name == "embeddings":
+        path = path / "all-products"
+    return path
+
+
+def embedding_cache_dir() -> Path:
+    return stage_cache_dir("embeddings")
 
 
 def file_sha256(path: Path) -> str:
@@ -106,6 +113,25 @@ def retrieval_layer_cache_key(
     )
 
 
+def embedding_cache_key(
+    *,
+    normalization_key: str,
+    embedding_model: str,
+    embedding_dimensions: int,
+    code: dict[str, str],
+) -> str:
+    return cache_key(
+        {
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
+            "stage": "product_embeddings",
+            "normalization_key": normalization_key,
+            "embedding_model": embedding_model,
+            "embedding_dimensions": embedding_dimensions,
+            "code": code,
+        }
+    )
+
+
 def scoring_cache_key(
     *,
     retrieval_key: str,
@@ -140,6 +166,10 @@ def clustering_cache_key(
 
 def cache_path_for(stage_name: str, key: str) -> Path:
     return stage_cache_dir(stage_name) / f"{key}.json"
+
+
+def embedding_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def product_signature(products: list[NormalizedProduct]) -> str:
@@ -272,4 +302,44 @@ def write_normalization_cache(path: Path, *, products: list[NormalizedProduct], 
         path,
         metadata=metadata,
         payload={"products": [asdict(product) for product in products]},
+    )
+
+
+def read_embedding_cache(path: Path) -> dict[str, dict[str, Any]] | None:
+    blob = read_stage_cache(path)
+    if blob is None:
+        return None
+    rows = blob["payload"].get("entries")
+    if not isinstance(rows, list):
+        return None
+    entries: dict[str, dict[str, Any]] = {}
+    try:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source_id = str(row["source_id"])
+            text_hash = str(row["text_hash"])
+            embedding = [float(value) for value in row["embedding"]]
+            entries[source_id] = {
+                "text_hash": text_hash,
+                "embedding": embedding,
+            }
+    except (KeyError, TypeError, ValueError):
+        return None
+    return entries
+
+
+def write_embedding_cache(path: Path, *, entries: dict[str, dict[str, Any]], metadata: dict[str, Any]) -> None:
+    records = [
+        {
+            "source_id": source_id,
+            "text_hash": str(entry["text_hash"]),
+            "embedding": [float(value) for value in entry["embedding"]],
+        }
+        for source_id, entry in sorted(entries.items())
+    ]
+    write_stage_cache(
+        path,
+        metadata=metadata,
+        payload={"entries": records},
     )

@@ -28,7 +28,6 @@ class ExtractedAttributes(BaseModel):
     variant_name: str | None = None
     model_number: str | None = None
     sku_like_identifiers: list[str] = Field(default_factory=list)
-    open_attributes: dict[str, str] = Field(default_factory=dict)
 
 
 def exact_keys(product: NormalizedProduct) -> dict[str, str]:
@@ -141,4 +140,3 @@ def invert_clusters(clusters: dict[str, dict[str, object]]) -> dict[str, str]:
         for source_id in cluster["source_ids"]:
             source_to_cluster[str(source_id)] = dedupe_id
     return source_to_cluster
-

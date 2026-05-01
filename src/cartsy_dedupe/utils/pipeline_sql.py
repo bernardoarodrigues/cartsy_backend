@@ -67,20 +67,30 @@ def trigram_candidate_sql() -> str:
 
 def vector_candidate_sql() -> str:
     return """
-        SELECT p.source_index, q.source_index,
-               'vector:cosine:' || round(q.similarity::numeric, 4)::text AS evidence
-        FROM cartsy_products p
-        JOIN LATERAL (
-            SELECT candidate.source_index,
-                   1 - (candidate.embedding <=> p.embedding) AS similarity
-            FROM cartsy_products candidate
-            WHERE p.embedding IS NOT NULL
-              AND candidate.embedding IS NOT NULL
-              AND candidate.source_index > p.source_index
-            ORDER BY candidate.embedding <=> p.embedding
-            LIMIT %s
-        ) q ON true
-        WHERE q.similarity >= 0.78
+        WITH raw AS (
+            SELECT LEAST(p.source_index, q.source_index) AS left_index,
+                   GREATEST(p.source_index, q.source_index) AS right_index,
+                   q.similarity
+            FROM cartsy_products p
+            JOIN LATERAL (
+                SELECT candidate.source_index,
+                       1 - (candidate.embedding <=> p.embedding) AS similarity
+                FROM cartsy_products candidate
+                WHERE p.embedding IS NOT NULL
+                  AND candidate.embedding IS NOT NULL
+                  AND candidate.source_index = ANY(%s)
+                  AND candidate.source_index <> p.source_index
+                ORDER BY candidate.embedding <=> p.embedding
+                LIMIT %s
+            ) q ON true
+            WHERE p.source_index = ANY(%s)
+        )
+        SELECT left_index,
+               right_index,
+               'vector:cosine:' || round(MAX(similarity)::numeric, 4)::text AS evidence
+        FROM raw
+        WHERE similarity >= 0.78
+        GROUP BY left_index, right_index
     """
 
 
@@ -106,4 +116,3 @@ def postgres_retrieval_features(block_keys: set[str]) -> dict[str, float]:
     features["trigram"] = min(1.0, features["trigram"])
     features["vector"] = min(1.0, features["vector"])
     return features
-

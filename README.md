@@ -82,7 +82,7 @@ The pipeline implements the full staged architecture in `info/dedupe_architectur
 - Exact retrieval joins global identifiers, marketplace IDs, retailer SKU, and canonical URL keys.
 - Lexical retrieval uses Postgres full-text search over weighted brand, title, category, specs, and description text.
 - Fuzzy retrieval uses `pg_trgm` title similarity within normalized brands.
-- Semantic retrieval embeds unresolved product text with OpenAI `text-embedding-3-small` by default and retrieves neighbors with pgvector cosine distance.
+- Semantic retrieval embeds only rows with promising lexical/trigram evidence by default, then retrieves pgvector cosine neighbors from that gated pool.
 - Attribute extraction uses OpenAI structured outputs with `gpt-5.4-nano` by default for candidate products that need pairwise clarification. Open-ended variant attributes like color, scent, flavor, material, and variant name live here, not in static normalization dictionaries.
 - Scoring combines deterministic rule evidence with exact, FTS, trigram, vector, and LLM attribute signals.
 - Clustering unions accepted duplicate pairs into canonical product groups, with cluster-level guards against conflicting brands, global identifiers, deterministic sizes, and LLM-extracted variant attributes.
@@ -94,6 +94,8 @@ Model names are configurable through `.env` because evaluator accounts may expos
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_EXTRACTION_MODEL=gpt-5.4-nano
 CARTSY_LLM_EXTRACTION_LIMIT=100
+CARTSY_VECTOR_MIN_FTS_RANK=0.08
+CARTSY_VECTOR_MIN_TRIGRAM_SIMILARITY=0.60
 CARTSY_NORMALIZATION_CACHE_DIR=.cache/cartsy-dedupe/normalization
 ```
 
@@ -184,6 +186,7 @@ This favors avoiding false-positive merges, because a bad merge could attach the
 - `threshold_sensitivity`: how many kept pairs would merge at nearby thresholds.
 - `decision_reason_counts`: top explanation signals for merged and non-merged near-miss pairs.
 - `blocking`: candidate retrieval counts split across exact, FTS, trigram, vector, and OpenAI stages.
+- `blocking.vector_anchor_indexes` / `blocking.vector_embedding_pool_indexes`: how many rows were eligible for vector search and how many rows were embedded after neighbor expansion.
 - `clustering`: accepted merge edges and merge edges blocked by the cluster guard.
 - `metrics`: end-to-end runtime, average time per input record, stage timings, OpenAI token usage, and estimated costs.
 

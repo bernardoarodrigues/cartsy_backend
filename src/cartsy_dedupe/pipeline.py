@@ -4,7 +4,7 @@ import json
 import os
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -27,12 +27,15 @@ from cartsy_dedupe.utils.pipeline_cache import (
     candidate_pairs_to_records,
     clustering_cache_key,
     code_fingerprint,
+    embedding_cache_key,
+    embedding_text_hash,
     normalization_cache_dir,
     normalization_cache_key,
     normalize_module_hash,
     pair_blocks_from_records,
     pair_blocks_to_records,
     product_signature,
+    read_embedding_cache,
     read_normalization_cache,
     read_stage_cache,
     retrieval_layer_cache_key,
@@ -41,6 +44,7 @@ from cartsy_dedupe.utils.pipeline_cache import (
     retrieval_cache_key,
     scoring_cache_key,
     stage_env_fingerprint,
+    write_embedding_cache,
     write_normalization_cache,
     write_stage_cache,
 )
@@ -56,6 +60,7 @@ from cartsy_dedupe.utils.pipeline_helpers import (
 )
 from cartsy_dedupe.utils.pipeline_metrics import RunMetrics
 from cartsy_dedupe.utils.pipeline_sql import (
+    evidence_value,
     exact_candidate_sql,
     lexical_candidate_sql,
     postgres_retrieval_features,
@@ -80,6 +85,23 @@ PairBlocks = dict[tuple[int, int], set[str]]
 Clusters = dict[str, dict[str, object]]
 
 
+def env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(slots=True)
+class RowRetrievalProfile:
+    has_exact: bool = False
+    fts_hit_count: int = 0
+    trigram_hit_count: int = 0
+    max_fts_rank: float = 0.0
+    max_trigram_similarity: float = 0.0
+    neighbor_indexes: set[int] = field(default_factory=set)
+
+
 class DedupePipeline:
     """Postgres + pgvector + OpenAI implementation of the architecture doc."""
 
@@ -96,9 +118,14 @@ class DedupePipeline:
         self.trigram_candidates = int(os.getenv("CARTSY_TRIGRAM_CANDIDATES", "25"))
         self.trigram_min_similarity = float(os.getenv("CARTSY_TRIGRAM_MIN_SIMILARITY", "0.55"))
         self.vector_candidates = int(os.getenv("CARTSY_VECTOR_CANDIDATES", "25"))
+        self.vector_require_neighbor = env_flag("CARTSY_VECTOR_REQUIRE_NEIGHBOR", True)
+        self.vector_min_fts_rank = float(os.getenv("CARTSY_VECTOR_MIN_FTS_RANK", "0.08"))
+        self.vector_min_trigram_similarity = float(os.getenv("CARTSY_VECTOR_MIN_TRIGRAM_SIMILARITY", "0.60"))
+        self.vector_include_neighbors = env_flag("CARTSY_VECTOR_INCLUDE_NEIGHBORS", True)
         self.embedding_dimensions = int(os.getenv("CARTSY_EMBEDDING_DIMENSIONS", "1536"))
         self.extracted_by_source_id: dict[str, dict[str, Any]] = {}
         self.embedding_count = 0
+        self.embedding_cache_hit_count = 0
         self.extraction_count = 0
         self.metrics = RunMetrics()
         self.dev = dev
@@ -153,6 +180,7 @@ class DedupePipeline:
             pair_blocks, layer_counts = self.retrieve_candidate_pairs(
                 conn,
                 config,
+                product_count=len(products),
                 normalization_key=normalization_key,
                 retrieval_env=retrieval_env,
                 retrieval_code=retrieval_code,
@@ -167,12 +195,27 @@ class DedupePipeline:
             "lexical_pairs": layer_counts.get("lexical", 0),
             "trigram_pairs": layer_counts.get("trigram", 0),
             "vector_pairs": layer_counts.get("vector", 0),
-            "blocking_keys": sum(layer_counts.values()),
+            "blocking_keys": (
+                layer_counts.get("exact", 0)
+                + layer_counts.get("lexical", 0)
+                + layer_counts.get("trigram", 0)
+                + layer_counts.get("vector", 0)
+            ),
             "skipped_blocks": 0,
             "oversized_block_rows": 0,
             "openai_embeddings_created": self.embedding_count,
+            "cached_embeddings_reused": self.embedding_cache_hit_count,
             "openai_extractions_created": self.extraction_count,
         }
+        stats.update(
+            {
+                "vector_anchor_indexes": layer_counts.get("vector_anchor_indexes", 0),
+                "vector_embedding_pool_indexes": layer_counts.get("vector_embedding_pool_indexes", 0),
+                "vector_indexes_skipped_exact": layer_counts.get("vector_indexes_skipped_exact", 0),
+                "vector_indexes_skipped_no_signal": layer_counts.get("vector_indexes_skipped_no_signal", 0),
+                "vector_indexes_skipped_weak_signal": layer_counts.get("vector_indexes_skipped_weak_signal", 0),
+            }
+        )
         return pair_blocks, stats
 
     def score_candidate_pairs(
@@ -456,14 +499,41 @@ class DedupePipeline:
             return {}
         return parsed.model_dump(exclude_none=True)
 
-    def embed_products(self, conn, *, exclude_indexes: set[int] | None = None) -> None:
+    def embed_products(
+        self,
+        conn,
+        *,
+        only_indexes: set[int] | None = None,
+        exclude_indexes: set[int] | None = None,
+        normalization_key: str | None = None,
+    ) -> None:
+        if self.vector_candidates <= 0:
+            self.dev_log("skipping embedding generation because CARTSY_VECTOR_CANDIDATES <= 0")
+            return
         if OpenAI is None:
             raise RuntimeError("Install openai before running embedding generation.")
         ensure_openai_api_key()
         client = OpenAI()
+        only_indexes = only_indexes or set()
         exclude_indexes = exclude_indexes or set()
+        if only_indexes:
+            allowed_indexes = sorted(only_indexes - exclude_indexes)
+            if not allowed_indexes:
+                return
         with conn.cursor() as cur:
-            if exclude_indexes:
+            if only_indexes:
+                cur.execute(
+                    """
+                    SELECT source_id, brand_raw, name_raw, category_raw, description_raw, specs_raw,
+                           dimension_raw
+                    FROM cartsy_products
+                    WHERE embedding IS NULL
+                      AND source_index = ANY(%s)
+                    ORDER BY source_index
+                    """,
+                    (allowed_indexes,),
+                )
+            elif exclude_indexes:
                 cur.execute(
                     """
                     SELECT source_id, brand_raw, name_raw, category_raw, description_raw, specs_raw,
@@ -489,7 +559,50 @@ class DedupePipeline:
         if not rows:
             return
 
-        batches = list(batched(rows, self.embedding_batch_size))
+        embedding_cache_path: Path | None = None
+        embedding_cache_entries: dict[str, dict[str, Any]] = {}
+        embedding_cache_metadata: dict[str, Any] | None = None
+        if normalization_key:
+            embedding_code = code_fingerprint("utils/pipeline_helpers.py")
+            embedding_cache_id = embedding_cache_key(
+                normalization_key=normalization_key,
+                embedding_model=self.embedding_model,
+                embedding_dimensions=self.embedding_dimensions,
+                code=embedding_code,
+            )
+            embedding_cache_path = cache_path_for("embeddings", embedding_cache_id)
+            embedding_cache_entries = read_embedding_cache(embedding_cache_path) or {}
+            embedding_cache_metadata = {
+                "stage": "product_embeddings",
+                "normalization_key": normalization_key,
+                "embedding_model": self.embedding_model,
+                "embedding_dimensions": self.embedding_dimensions,
+                "code": embedding_code,
+            }
+
+        rows_to_embed: list[tuple[str, str, str, str, str, str, str]] = []
+        cached_updates: list[tuple[list[float], str]] = []
+        for row in rows:
+            text = embedding_text(
+                brand=row[1],
+                title=row[2],
+                category=row[3],
+                description=row[4],
+                specs=row[5],
+                dimension=row[6],
+            )
+            cached_entry = embedding_cache_entries.get(row[0])
+            if cached_entry and cached_entry.get("text_hash") == embedding_text_hash(text):
+                cached_updates.append((list(cached_entry["embedding"]), row[0]))
+                continue
+            rows_to_embed.append(row)
+        if cached_updates:
+            with conn.cursor() as cur:
+                cur.executemany("UPDATE cartsy_products SET embedding = %s WHERE source_id = %s", cached_updates)
+            self.embedding_cache_hit_count += len(cached_updates)
+            self.dev_log(f"reused {len(cached_updates):,} cached embeddings")
+
+        batches = list(batched(rows_to_embed, self.embedding_batch_size))
         self.dev_log(f"creating embeddings in {len(batches):,} batches")
         for batch in self.progress(
             batches,
@@ -515,6 +628,17 @@ class DedupePipeline:
                 cur.executemany("UPDATE cartsy_products SET embedding = %s WHERE source_id = %s", updates)
             self.embedding_count += len(updates)
             print(f"embedded {self.embedding_count:,} products")
+            if embedding_cache_path is not None and embedding_cache_metadata is not None:
+                for item, row, text in zip(response.data, batch, texts, strict=True):
+                    embedding_cache_entries[row[0]] = {
+                        "text_hash": embedding_text_hash(text),
+                        "embedding": item.embedding,
+                    }
+                write_embedding_cache(
+                    embedding_cache_path,
+                    entries=embedding_cache_entries,
+                    metadata=embedding_cache_metadata,
+                )
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -540,6 +664,7 @@ class DedupePipeline:
         conn,
         config: PipelineConfig,
         *,
+        product_count: int,
         normalization_key: str | None = None,
         retrieval_env: dict[str, str | None] | None = None,
         retrieval_code: dict[str, str] | None = None,
@@ -592,25 +717,115 @@ class DedupePipeline:
             retrieval_code=retrieval_code,
         )
         self.merge_candidate_rows(pairs, counts, "trigram", trigram_rows, config.max_candidate_pairs)
+        anchor_indexes: set[int] = set()
+        embedding_pool_indexes: set[int] = set()
+        vector_gating_stats: Counter[str] = Counter()
+        if self.vector_candidates > 0:
+            profiles = self.build_row_retrieval_profiles(exact_rows, lexical_rows, trigram_rows)
+            anchor_indexes, embedding_pool_indexes, vector_gating_stats = self.collect_vector_index_sets(
+                profiles,
+                product_count=product_count,
+            )
         cap_reached = config.max_candidate_pairs is not None and len(pairs) >= config.max_candidate_pairs
-        if self.vector_candidates > 0 and not cap_reached:
+        if self.vector_candidates > 0 and anchor_indexes and not cap_reached:
             self.dev_log("retrieval stage: vector embeddings")
-            self.embed_products(conn, exclude_indexes=exact_resolved_indexes)
+            self.dev_log(
+                "vector gating kept "
+                f"{len(anchor_indexes):,} anchor rows and {len(embedding_pool_indexes):,} embedding-pool rows"
+            )
+            self.embed_products(
+                conn,
+                only_indexes=embedding_pool_indexes,
+                exclude_indexes=exact_resolved_indexes,
+                normalization_key=normalization_key,
+            )
             vector_rows = self.load_or_fetch_retrieval_rows(
                 conn,
                 "vector",
                 sql=vector_candidate_sql(),
-                params=(self.vector_candidates,),
+                params=(sorted(embedding_pool_indexes), self.vector_candidates, sorted(anchor_indexes)),
                 layer_params={
                     "vector_candidates": self.vector_candidates,
                     "excluded_exact_index_count": len(exact_resolved_indexes),
+                    "vector_anchor_indexes": len(anchor_indexes),
+                    "vector_embedding_pool_indexes": len(embedding_pool_indexes),
                 },
                 normalization_key=normalization_key,
                 retrieval_env=retrieval_env,
                 retrieval_code=retrieval_code,
             )
             self.merge_candidate_rows(pairs, counts, "vector", vector_rows, config.max_candidate_pairs)
+        counts.update(vector_gating_stats)
         return pairs, counts
+
+    def build_row_retrieval_profiles(
+        self,
+        exact_rows: list[tuple[int, int, str]],
+        lexical_rows: list[tuple[int, int, str]],
+        trigram_rows: list[tuple[int, int, str]],
+    ) -> dict[int, RowRetrievalProfile]:
+        profiles: dict[int, RowRetrievalProfile] = defaultdict(RowRetrievalProfile)
+        for left, right, _evidence in exact_rows:
+            profiles[left].has_exact = True
+            profiles[right].has_exact = True
+        for left, right, evidence in lexical_rows:
+            rank = evidence_value(evidence, default=0.0)
+            left_profile = profiles[left]
+            right_profile = profiles[right]
+            left_profile.fts_hit_count += 1
+            right_profile.fts_hit_count += 1
+            left_profile.max_fts_rank = max(left_profile.max_fts_rank, rank)
+            right_profile.max_fts_rank = max(right_profile.max_fts_rank, rank)
+            left_profile.neighbor_indexes.add(right)
+            right_profile.neighbor_indexes.add(left)
+        for left, right, evidence in trigram_rows:
+            similarity = evidence_value(evidence, default=0.0)
+            left_profile = profiles[left]
+            right_profile = profiles[right]
+            left_profile.trigram_hit_count += 1
+            right_profile.trigram_hit_count += 1
+            left_profile.max_trigram_similarity = max(left_profile.max_trigram_similarity, similarity)
+            right_profile.max_trigram_similarity = max(right_profile.max_trigram_similarity, similarity)
+            left_profile.neighbor_indexes.add(right)
+            right_profile.neighbor_indexes.add(left)
+        return dict(profiles)
+
+    def collect_vector_index_sets(
+        self,
+        profiles: dict[int, RowRetrievalProfile],
+        *,
+        product_count: int,
+    ) -> tuple[set[int], set[int], Counter[str]]:
+        anchor_indexes: set[int] = set()
+        embedding_pool_indexes: set[int] = set()
+        stats: Counter[str] = Counter()
+        for index in range(product_count):
+            profile = profiles.get(index)
+            if profile is None:
+                stats["vector_indexes_skipped_no_signal"] += 1
+                continue
+            if profile.has_exact:
+                stats["vector_indexes_skipped_exact"] += 1
+                continue
+            if self.vector_require_neighbor and not profile.neighbor_indexes:
+                stats["vector_indexes_skipped_no_signal"] += 1
+                continue
+            strong_fts = profile.max_fts_rank >= self.vector_min_fts_rank
+            strong_trigram = profile.max_trigram_similarity >= self.vector_min_trigram_similarity
+            multi_signal = profile.fts_hit_count > 0 and profile.trigram_hit_count > 0
+            if not (strong_fts or strong_trigram or multi_signal):
+                stats["vector_indexes_skipped_weak_signal"] += 1
+                continue
+            anchor_indexes.add(index)
+            embedding_pool_indexes.add(index)
+            if self.vector_include_neighbors:
+                for neighbor in profile.neighbor_indexes:
+                    neighbor_profile = profiles.get(neighbor)
+                    if neighbor_profile is None or not neighbor_profile.has_exact:
+                        embedding_pool_indexes.add(neighbor)
+        stats["vector_anchor_indexes"] = len(anchor_indexes)
+        stats["vector_embedding_pool_indexes"] = len(embedding_pool_indexes)
+        return anchor_indexes, embedding_pool_indexes, stats
 
     def load_or_fetch_retrieval_rows(
         self,
@@ -681,6 +896,10 @@ class DedupePipeline:
                 "CARTSY_EMBEDDING_DIMENSIONS",
                 "CARTSY_EMBEDDING_BATCH_SIZE",
                 "CARTSY_VECTOR_CANDIDATES",
+                "CARTSY_VECTOR_REQUIRE_NEIGHBOR",
+                "CARTSY_VECTOR_MIN_FTS_RANK",
+                "CARTSY_VECTOR_MIN_TRIGRAM_SIMILARITY",
+                "CARTSY_VECTOR_INCLUDE_NEIGHBORS",
             ),
         }
         keys = env_keys_by_layer.get(layer)
@@ -942,6 +1161,10 @@ def run_pipeline(
             "CARTSY_TRIGRAM_CANDIDATES",
             "CARTSY_TRIGRAM_MIN_SIMILARITY",
             "CARTSY_VECTOR_CANDIDATES",
+            "CARTSY_VECTOR_REQUIRE_NEIGHBOR",
+            "CARTSY_VECTOR_MIN_FTS_RANK",
+            "CARTSY_VECTOR_MIN_TRIGRAM_SIMILARITY",
+            "CARTSY_VECTOR_INCLUDE_NEIGHBORS",
             "CARTSY_EMBEDDING_DIMENSIONS",
         ]
     )

@@ -265,6 +265,87 @@ def read_assignments(run_dir: str | Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def read_groups(run_dir: str | Path) -> list[dict[str, object]]:
+    path = Path(run_dir) / "dedupe_groups.jsonl"
+    groups: list[dict[str, object]] = []
+    if not path.exists():
+        return groups
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                groups.append(json.loads(line))
+    return groups
+
+
+def read_near_misses(run_dir: str | Path) -> list[dict[str, str]]:
+    path = Path(run_dir) / "near_miss_pairs.csv"
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def read_candidate_pairs(run_dir: str | Path) -> list[dict[str, object]]:
+    run_path = Path(run_dir)
+    parquet_path = run_path / "candidate_pairs.parquet"
+    if parquet_path.exists():
+        try:
+            import polars as pl
+
+            df = pl.read_parquet(parquet_path)
+            return df.to_dicts()
+        except ImportError:
+            pass
+    csv_path = run_path / "candidate_pairs.csv"
+    if csv_path.exists():
+        with csv_path.open(newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+    return []
+
+
+def build_group_graph(run_dir: str | Path, dedupe_id: str) -> dict[str, object]:
+    assignments = read_assignments(run_dir)
+    members = [row for row in assignments if row.get("dedupe_id") == dedupe_id]
+    if not members:
+        raise LookupError(f"No group found for dedupe_id={dedupe_id}")
+    member_ids = {row["source_id"] for row in members}
+
+    nodes = [
+        {
+            "id": row["source_id"],
+            "source_id": row["source_id"],
+            "name": row.get("name_raw", ""),
+            "brand": row.get("brand_raw", ""),
+            "retailer": row.get("retailer", ""),
+            "price_cents": row.get("price_cents", ""),
+            "sku": row.get("sku", ""),
+            "dimension": row.get("dimension", ""),
+            "canonical_name": row.get("canonical_name", ""),
+            "canonical_brand": row.get("canonical_brand", ""),
+            "decision": row.get("decision", ""),
+            "cluster_confidence": row.get("cluster_confidence", ""),
+        }
+        for row in members
+    ]
+
+    edges: list[dict[str, object]] = []
+    for pair in read_candidate_pairs(run_dir):
+        a = str(pair.get("product_a_id", ""))
+        b = str(pair.get("product_b_id", ""))
+        if a in member_ids and b in member_ids:
+            edges.append(
+                {
+                    "source": a,
+                    "target": b,
+                    "score": float(pair.get("score") or 0.0),
+                    "decision": pair.get("decision", ""),
+                    "explanation": pair.get("explanation", ""),
+                    "feature_scores": pair.get("feature_scores", ""),
+                }
+            )
+    return {"dedupe_id": dedupe_id, "nodes": nodes, "edges": edges}
+
+
 def read_group(run_dir: str | Path, dedupe_id: str) -> dict[str, object] | None:
     path = Path(run_dir) / "dedupe_groups.jsonl"
     with path.open(encoding="utf-8") as handle:
