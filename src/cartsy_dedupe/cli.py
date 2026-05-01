@@ -11,6 +11,7 @@ from .artifact_index import index_artifacts, search_artifacts
 from .config import PipelineConfig
 from .pipeline import run_pipeline
 from .query import explain_pair, get_group, print_table, search_products
+from .training import augment_training_data, train_logistic_regression
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,6 +95,29 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--reload", action="store_true")
+
+    augment = subparsers.add_parser("augment-training-data", help="Create guarded synthetic positives and dirty-identifier hard negatives.")
+    augment.add_argument("--input", required=True, help="Input product CSV path.")
+    augment.add_argument("--ground-truth", required=True, help="Ground-truth CSV with source_id,deduped_id.")
+    augment.add_argument("--output-data", required=True, help="Augmented product CSV path.")
+    augment.add_argument("--output-ground-truth", required=True, help="Augmented ground-truth CSV path.")
+    augment.add_argument("--output-manifest", required=True, help="Augmentation manifest CSV path.")
+    augment.add_argument("--duplicate-samples", type=int, required=True)
+    augment.add_argument("--hard-negative-samples", type=int, default=None)
+    augment.add_argument("--start-source-id", type=int, default=500_000)
+    augment.add_argument("--start-deduped-id", type=int, default=500_000)
+    augment.add_argument("--seed", type=int, default=7)
+
+    train = subparsers.add_parser("train-model", help="Train the logistic-regression pair scorer and write eval artifacts.")
+    train.add_argument("--products", required=True, help="Training product CSV path.")
+    train.add_argument("--ground-truth", required=True, help="Ground-truth CSV with source_id,deduped_id.")
+    train.add_argument("--output-dir", required=True, help="Directory for model and eval artifacts.")
+    train.add_argument("--target-precision", type=float, default=0.97)
+    train.add_argument("--random-state", type=int, default=42)
+    train.add_argument("--max-positive-pairs", type=int, default=50_000)
+    train.add_argument("--max-hard-negative-pairs", type=int, default=150_000)
+    train.add_argument("--use-openai-embeddings", action="store_true", help="Compute dense semantic_sim using OpenAI embeddings during training.")
+    train.add_argument("--embedding-model", default=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
 
     return parser
 
@@ -197,6 +221,45 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["CARTSY_RUNS_ROOT"] = args.runs_root
         app = "cartsy_dedupe.api:create_app" if args.reload else create_app(runs_root=args.runs_root)
         uvicorn.run(app, host=args.host, port=args.port, reload=args.reload, factory=args.reload)
+        return 0
+
+    if args.command == "augment-training-data":
+        try:
+            report = augment_training_data(
+                input_path=args.input,
+                ground_truth_path=args.ground_truth,
+                output_data_path=args.output_data,
+                output_ground_truth_path=args.output_ground_truth,
+                output_manifest_path=args.output_manifest,
+                duplicate_samples=args.duplicate_samples,
+                hard_negative_samples=args.hard_negative_samples,
+                start_source_id=args.start_source_id,
+                start_deduped_id=args.start_deduped_id,
+                seed=args.seed,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "train-model":
+        try:
+            report = train_logistic_regression(
+                products_path=args.products,
+                ground_truth_path=args.ground_truth,
+                output_dir=args.output_dir,
+                target_precision=args.target_precision,
+                random_state=args.random_state,
+                max_positive_pairs=args.max_positive_pairs,
+                max_hard_negative_pairs=args.max_hard_negative_pairs,
+                use_openai_embeddings=args.use_openai_embeddings,
+                embedding_model=args.embedding_model,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
 
     parser.error(f"Unknown command: {args.command}")
