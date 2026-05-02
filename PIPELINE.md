@@ -33,7 +33,7 @@ Trade-off: this avoids embedding truly unrelated products, but logistic regressi
 
 ## 4. Pairwise ML Features
 
-`src/cartsy_dedupe/features.py` builds the stable pairwise feature contract ported from the experiment:
+`src/cartsy_dedupe/features.py` builds the stable pairwise feature contract. `DEFAULT_FEATURE_COLUMNS` is the model contract: adding, removing, or reordering columns invalidates existing `.joblib` bundles and requires retraining.
 
 ```text
 same_retailer
@@ -62,40 +62,54 @@ exact_key_count
 exact_evidence_strength
 exact_sku_same_retailer
 exact_sku_cross_retailer
-rule_score
-rule_auto_blocked
+rule_certain_match       ← CERTAIN_MATCH fired (EAN/GTIN/UPC/ASIN/URL)
+rule_strong_match        ← STRONG_MATCH fired (retailer SKU or brand+title≥0.95)
+rule_likely_match        ← LIKELY_MATCH fired (brand+title≥0.85+size or model overlap)
+rule_certain_block       ← CERTAIN_BLOCK fired (hard contradiction detected)
 lexical_sim
 trigram_sim
 semantic_sim
 retrieval_layer_count
 variant_conflict
+feature_coverage_count   ← count of active evidence channels for this pair
 ```
 
-The logistic model is trained against this exact column order. Existing bundles can still load with their saved feature subset, but new exact-evidence columns only affect the ML score after retraining and reviewing `feature_coefficients.csv`.
+Rule indicator features replace the former single `rule_score` float. The ML model learns a separate weight per certainty level instead of inheriting a pre-baked scalar. `feature_coverage_count` lets the model express lower confidence on pairs where most signals are at their missing-value defaults.
 
-## 5. Merge Decision
+## 5. Rule Evaluation And Merge Decision
 
-The merge policy is layered:
+Each candidate pair first passes through an ordered condition chain in `src/cartsy_dedupe/scoring.py`. The chain returns one of five certainty levels:
+
+| Level | What it means | Pipeline action |
+|---|---|---|
+| `CERTAIN_BLOCK` | Hard contradiction (conflicting global ID, brand, size, or pack count) | score=0.0, skip ML |
+| `CERTAIN_MATCH` | Exact global ID (EAN/GTIN/UPC), ASIN, or trusted canonical URL | score=1.0, skip ML |
+| `STRONG_MATCH` | Same-retailer SKU, or brand+title≥0.95 with model overlap | ML scores pair; certainty is a feature |
+| `LIKELY_MATCH` | Brand+title≥0.85+size match, or brand+model overlap+title≥0.70 | ML scores pair; certainty is a feature |
+| `UNCERTAIN` | No clear signal either way | ML scores pair; certainty is a feature |
+
+For pairs that reach the ML model:
 
 ```python
-features = build_pair_features(...)
-ml_score = logistic_regression.predict_proba(features)
+rule_decision = evaluate_rule(left, right)
+pair_features = build_pair_features(..., rule_decision=rule_decision)
+ml_score = calibrated_logistic_regression.predict_proba(pair_features)
 
-if hard_contradiction:
-    decision = "no_merge"
-elif strong_exact_evidence:
-    decision = "merge"
+if rule_decision.certainty == CERTAIN_MATCH:
+    decision = "merge"                          # bypass ML
+elif rule_decision.certainty == CERTAIN_BLOCK:
+    decision = "no_merge"                       # bypass ML
+elif hard_contradiction_features(pair_features):
+    decision = "no_merge"                       # ML called, but score capped
 elif ml_score >= threshold:
     decision = "merge"
 else:
     decision = "no_merge"
 ```
 
-Strong exact evidence means shared global identifiers, ASIN, same-retailer SKU, or a trusted canonical product URL. Canonical URLs are only inserted into the exact-key table when they look like product pages; click/count/redirect/tracking URLs are ignored.
+Canonical URLs are trusted only when they look like product pages; click/count/redirect/tracking paths are filtered by `canonicalize_url` before insertion into the exact-key table.
 
-Hard contradictions include deterministic size conflicts, pack conflicts, variant conflicts, and the existing rule scorer's hard blocks. Runtime contradictions come from deterministic and ML feature evidence.
-
-Trade-off: exact identifiers recover the high-precision deterministic behavior that should not be vetoed by a weakly calibrated model, while logistic regression remains the inspectable decision surface for ambiguous lexical, trigram, vector, semantic, and rule-score evidence.
+Trade-off: deterministic certainty conditions handle the obvious cases without ML inference overhead. The calibrated logistic regression remains the decision surface for everything in between, with interpretable rule indicator features rather than a single blended score float.
 
 ## 6. Cluster Accepted Merge Edges
 
@@ -105,29 +119,33 @@ Trade-off: the model scores pairs, while clustering handles group construction. 
 
 ## 7. Training And Evaluation
 
-Training should use the augmented dataset from the experiment checkout when available:
+Training should use the augmented dataset:
 
 ```bash
 cartsy-dedupe train-model \
   --products data/dataset_v1_augmented.csv \
   --ground-truth data/ground_truth_v1_augmented.csv \
   --output-dir models \
-  --target-precision 0.97 \
+  --cv-folds 5 \
   --max-positive-pairs 10000 \
   --max-hard-negative-pairs 30000 \
   --use-embeddings
 ```
 
-Synthetic augmentation creates two high-value patterns from the experiment:
+`--target-precision` is accepted for backward compatibility but no longer drives threshold selection.
+
+**Threshold selection** uses stratified k-fold cross-validation (default 5 folds). The median F1-maximising threshold across folds is chosen, making the decision boundary stable across data distributions rather than fitted to a single test fold. A separate held-out calibration split (≈15% of data) is used for `CalibratedClassifierCV` isotonic regression, which makes `P(merge)` values reliable probabilities rather than raw logit-derived scores on imbalanced data. For small datasets the function automatically falls back to a simpler 70/30 split.
+
+Synthetic augmentation creates two high-value patterns:
 
 - guarded positive duplicates that preserve variant signatures
 - dirty-identifier hard negatives with shared weak identifiers and variant conflicts
 
-If the augmented CSVs need to be regenerated, `cartsy-dedupe augment-training-data` ports those same patterns into this repo.
+If the augmented CSVs need to be regenerated, `cartsy-dedupe augment-training-data` ports those same patterns.
 
-Every training run writes threshold curves, precision/recall/F1, false positives, false negatives, feature coefficients, and top risky predicted clusters. These artifacts are the calibration surface for changing thresholds or features.
+Every training run writes threshold curves, precision/recall/F1, CV thresholds, false positives, false negatives, feature coefficients, and top risky predicted clusters. `metrics.json` includes `cv_folds`, `cv_thresholds`, and `calibrated` keys.
 
-When exact-evidence features change, retrain the model before using the new columns as ML signals. The runtime exact-merge policy works independently of retraining because it reads the same feature dictionary directly.
+When `DEFAULT_FEATURE_COLUMNS` changes, retrain the model — the runtime `load_ml_model` check validates that bundle feature columns match the current contract and rejects stale bundles.
 
 ## 8. Retrieval Defaults
 
@@ -144,9 +162,11 @@ Trade-off: this creates more candidates than the smoke-test profile, but candida
 
 ## 9. Caching Policy
 
-Stage caching is disabled in the main run path while the ML scorer is being integrated. This prevents stale retrieval/scoring/cluster artifacts from masking model or feature changes.
+Full stage-level caching (reading/writing complete retrieval, scoring, and cluster results) is not implemented in the main run path. Each run recomputes all stages from scratch.
 
-Product embedding caching remains available because it is keyed by product embedding text, model, dimensions, and code fingerprint. It saves OpenAI cost without hiding scorer behavior.
+Per-layer retrieval caching is available inside `load_or_fetch_retrieval_rows`. Pass `retrieval_env` and `retrieval_code` to `generate_candidate_pairs` to enable it; by default these are `None` and the layer cache is skipped.
+
+Product embedding caching is active by default. It is keyed by product embedding text, model, dimensions, and code fingerprint, so embeddings are reused across repeated runs on the same products and save OpenAI API cost.
 
 ## 10. Run Artifacts
 

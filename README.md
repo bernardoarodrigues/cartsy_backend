@@ -1,6 +1,6 @@
 # Cartsy Product Deduplication Pipeline
 
-Production-shaped product entity resolution for the Cartsy challenge. The current pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, computes a stable pairwise ML feature vector, adds dense semantic similarity for every scored candidate pair, restores high-precision exact-evidence merges when no contradiction exists, and uses a trained logistic-regression model for borderline merge/no-merge decisions.
+Production-shaped product entity resolution for the Cartsy challenge. The pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, evaluates each pair through a condition-based certainty chain (hard-blocking contradictions and fast-pathing exact identifier matches), and uses a calibrated logistic-regression model with cross-validated threshold selection for all uncertain cases.
 
 The canonical pipeline walkthrough is in `PIPELINE.md`.
 
@@ -26,7 +26,7 @@ Train from the augmented experiment dataset. The large augmented CSVs are local 
   --products data/dataset_v1_augmented.csv \
   --ground-truth data/ground_truth_v1_augmented.csv \
   --output-dir models \
-  --target-precision 0.97 \
+  --cv-folds 5 \
   --max-positive-pairs 10000 \
   --max-hard-negative-pairs 30000 \
   --use-embeddings
@@ -76,7 +76,7 @@ near_miss_pairs.csv
 summary_report.json
 ```
 
-`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, embedding usage/cost estimates when using OpenAI, and a `stage_caches.stage_caching.enabled=0` marker. Stage caching is deliberately disabled while the exact-plus-ML scorer is being calibrated; product embedding caching remains available to avoid recomputing unchanged product text embeddings.
+`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, embedding usage/cost estimates when using OpenAI, and per-stage cache paths for debugging. Product embedding caching is available to avoid recomputing embeddings for unchanged products across repeated runs.
 
 ## Query Completed Runs
 
