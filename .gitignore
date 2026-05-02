@@ -4,10 +4,9 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# Large/local inputs and generated pipeline artifacts.
-data/products.csv
-data/dataset_v1_augmented.csv
-data/ground_truth_v1_augmented.csv
+# Large/local inputs and generated artifacts
+data/
+models/
 outputs/run_*/
 outputs/latest
 outputs/smoke_*/
