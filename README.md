@@ -1,6 +1,6 @@
 # Cartsy Product Deduplication Pipeline
 
-Production-shaped product entity resolution for the Cartsy challenge. The current pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, computes a stable pairwise ML feature vector, adds dense OpenAI semantic similarity for every scored candidate pair, and uses a trained logistic-regression model to decide merge/no-merge.
+Production-shaped product entity resolution for the Cartsy challenge. The current pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, computes a stable pairwise ML feature vector, adds dense OpenAI semantic similarity for every scored candidate pair, restores high-precision exact-evidence merges when no contradiction exists, and uses a trained logistic-regression model for borderline merge/no-merge decisions.
 
 The canonical pipeline walkthrough is in `PIPELINE.md`.
 
@@ -76,7 +76,7 @@ near_miss_pairs.csv
 summary_report.json
 ```
 
-`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, OpenAI usage/cost estimates, and a `stage_caches.stage_caching.enabled=0` marker. Stage caching is deliberately disabled while the ML scorer is the source of truth; product embedding caching remains available to avoid repeated OpenAI calls for unchanged product text.
+`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, OpenAI usage/cost estimates, and a `stage_caches.stage_caching.enabled=0` marker. Stage caching is deliberately disabled while the exact-plus-ML scorer is being calibrated; product embedding caching remains available to avoid repeated OpenAI calls for unchanged product text.
 
 ## Query Completed Runs
 
