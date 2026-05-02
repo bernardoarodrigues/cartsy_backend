@@ -22,7 +22,7 @@ from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features,
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.schemas import NormalizedProduct
-from cartsy_dedupe.scoring import score_pair, string_similarity
+from cartsy_dedupe.scoring import evaluate_rule, string_similarity
 from cartsy_dedupe.utils.pipeline_helpers import embedding_text
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
 
@@ -544,14 +544,13 @@ def pair_feature_rows(
         pair_key = (example.left_index, example.right_index)
         left = products[example.left_index]
         right = products[example.right_index]
-        rule_result = score_pair(left, right, merge_threshold=0.84)
+        rule_decision = evaluate_rule(left, right)
         features = build_pair_features(
             left,
             right,
             example.block_keys,
             semantic_sim=semantic_by_pair.get(pair_key, 0.0),
-            rule_score=rule_result.score,
-            rule_auto_blocked=rule_result.auto_blocked,
+            rule_decision=rule_decision,
         )
         rows.append(
             {

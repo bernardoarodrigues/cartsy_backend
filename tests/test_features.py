@@ -45,7 +45,8 @@ def test_pair_features_match_experiment_contract() -> None:
     assert features["retrieval_layer_count"] == 3.0
     assert features["price_both_present"] == 1.0
     assert "exact_global_id" in DEFAULT_FEATURE_COLUMNS
-    assert "rule_score" in DEFAULT_FEATURE_COLUMNS
+    assert "rule_certain_match" in DEFAULT_FEATURE_COLUMNS
+    assert "feature_coverage_count" in DEFAULT_FEATURE_COLUMNS
 
 
 def test_pair_features_include_identifier_and_variant_conflicts() -> None:

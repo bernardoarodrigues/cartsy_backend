@@ -26,7 +26,7 @@ from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.reporting import build_summary_report
 from cartsy_dedupe.schemas import CandidatePair, NormalizedProduct
-from cartsy_dedupe.scoring import score_pair
+from cartsy_dedupe.scoring import MatchCertainty, evaluate_rule
 from cartsy_dedupe.storage import prepare_output_dir, write_outputs
 from cartsy_dedupe.utils.pipeline_cache import (
     cache_path_for,
@@ -1044,43 +1044,53 @@ class DedupePipeline:
         *,
         semantic_sim: float = 0.0,
     ) -> CandidatePair:
-        rule_result = score_pair(left, right, merge_threshold=config.merge_threshold)
+        rule_decision = evaluate_rule(left, right)
         retrieval = postgres_retrieval_features(block_keys)
-        pair_features = build_pair_features(left, right, block_keys, semantic_sim=semantic_sim)
-        ml_score = self.predict_ml_score(pair_features)
+        pair_features = build_pair_features(
+            left, right, block_keys,
+            semantic_sim=semantic_sim,
+            rule_decision=rule_decision,
+        )
         threshold = self.ml_threshold(config.merge_threshold)
 
-        hard_contradiction = (
-            rule_result.auto_blocked
-            or hard_contradiction_features(pair_features)
-        )
-        relation = "same_parent_different_variant" if hard_contradiction else "exact_match"
-        score = ml_score
-        if hard_contradiction:
-            relation = "same_parent_different_variant"
-            score = min(score, threshold - 0.01)
-        elif score < threshold and score >= config.near_miss_threshold:
-            relation = "similar_related_product"
-        elif score < config.near_miss_threshold:
-            relation = "no_match"
+        if rule_decision.certainty == MatchCertainty.CERTAIN_MATCH:
+            ml_score, score, decision = 1.0, 1.0, "merge"
+            relation = "certain_match"
+            hard_contradiction_val = 0.0
+        elif rule_decision.certainty == MatchCertainty.CERTAIN_BLOCK:
+            ml_score, score, decision = 0.0, 0.0, "no_merge"
+            relation = "certain_block"
+            hard_contradiction_val = 1.0
+        else:
+            ml_score = self.predict_ml_score(pair_features)
+            hard_contradiction = hard_contradiction_features(pair_features)
+            hard_contradiction_val = float(hard_contradiction)
+            score = ml_score
+            relation = "exact_match"
+            if hard_contradiction:
+                relation = "same_parent_different_variant"
+                score = min(ml_score, threshold - 0.01)
+            elif ml_score < threshold and ml_score >= config.near_miss_threshold:
+                relation = "similar_related_product"
+            elif ml_score < config.near_miss_threshold:
+                relation = "no_match"
+            score = max(0.0, min(1.0, score))
+            decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
 
-        score = max(0.0, min(1.0, score))
-        decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
         explanations = [
             f"relation:{relation}",
+            f"rule:{rule_decision.certainty.value}",
+            f"rule_reason:{rule_decision.reason}",
             f"ml_score:{ml_score:.2f}",
             f"ml_threshold:{threshold:.2f}",
-            f"rule_score:{rule_result.score:.2f}",
             f"exact:{retrieval['exact']:.2f}",
             f"fts:{retrieval['lexical']:.2f}",
             f"trigram:{retrieval['trigram']:.2f}",
             f"vector:{retrieval['vector']:.2f}",
             f"semantic:{semantic_sim:.2f}",
         ]
-        if rule_result.explanation:
-            explanations.append(rule_result.explanation)
         feature_scores = {
-            **rule_result.feature_scores,
+            **rule_decision.feature_scores,
             "postgres_exact": retrieval["exact"],
             "postgres_fts": retrieval["lexical"],
             "postgres_trigram": retrieval["trigram"],
@@ -1088,7 +1098,7 @@ class DedupePipeline:
             "semantic_sim": semantic_sim,
             "ml_score": ml_score,
             "ml_threshold": threshold,
-            "hard_contradiction": float(hard_contradiction),
+            "hard_contradiction": hard_contradiction_val,
         }
         feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})
         return CandidatePair(

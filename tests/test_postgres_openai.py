@@ -180,9 +180,10 @@ def test_score_postgres_pair_uses_logistic_model_and_hard_contradiction() -> Non
         semantic_sim=0.97,
     )
 
+    # CERTAIN_BLOCK (conflicting unambiguous size) bypasses ML entirely.
     assert pair.decision == "no_merge"
-    assert pair.score < 0.84
-    assert pair.feature_scores["ml_score"] == 0.95
+    assert pair.score == 0.0
+    assert pair.feature_scores["ml_score"] == 0.0
     assert pair.feature_scores["hard_contradiction"] == 1.0
 
 

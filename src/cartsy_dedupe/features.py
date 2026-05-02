@@ -1,3 +1,17 @@
+"""ML feature extraction for product deduplication candidate pairs.
+
+``build_pair_features`` produces the stable pairwise feature vector consumed
+by the logistic-regression scorer.  ``DEFAULT_FEATURE_COLUMNS`` is the model
+contract: adding, removing, or reordering columns invalidates existing
+``.joblib`` bundles and requires retraining.
+
+Rule-derived indicator features (``rule_certain_match``, ``rule_strong_match``,
+``rule_likely_match``, ``rule_certain_block``) replace the former single
+``rule_score`` float, giving the model interpretable certainty signals from the
+condition chain.  ``feature_coverage_count`` measures how many independent
+evidence channels carry non-zero signal for a pair, helping the model express
+lower confidence on sparse-evidence decisions.
+"""
 from __future__ import annotations
 
 import math
@@ -7,6 +21,7 @@ from collections.abc import Mapping
 from cartsy_dedupe.attributes import sizes_equivalent
 from cartsy_dedupe.config import GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
 from cartsy_dedupe.schemas import NormalizedProduct
+from cartsy_dedupe.scoring import MatchCertainty, RuleDecision
 from cartsy_dedupe.text import STOPWORDS, normalize_text
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
 
@@ -58,14 +73,33 @@ DEFAULT_FEATURE_COLUMNS = [
     "exact_evidence_strength",
     "exact_sku_same_retailer",
     "exact_sku_cross_retailer",
-    "rule_score",
-    "rule_auto_blocked",
+    "rule_certain_match",
+    "rule_strong_match",
+    "rule_likely_match",
+    "rule_certain_block",
     "lexical_sim",
     "trigram_sim",
     "semantic_sim",
     "retrieval_layer_count",
     "variant_conflict",
+    "feature_coverage_count",
 ]
+
+# Features that carry independent evidence; used to count active signals per pair.
+_COVERAGE_INDICATORS: tuple[str, ...] = (
+    "brand_exact",
+    "exact_global_id",
+    "exact_asin",
+    "exact_retailer_sku",
+    "exact_canonical_url",
+    "size_match",
+    "pack_match",
+    "model_token_jaccard",
+    "salient_token_jaccard",
+    "rule_certain_match",
+    "rule_strong_match",
+    "rule_likely_match",
+)
 
 GENERIC_TITLE_TOKENS = {
     "agua",
@@ -104,13 +138,27 @@ def build_pair_features(
     block_keys: set[str],
     *,
     semantic_sim: float = 0.0,
-    rule_score: float = 0.0,
-    rule_auto_blocked: bool = False,
+    rule_decision: RuleDecision | None = None,
 ) -> dict[str, float]:
-    """Build the stable pairwise ML features ported from the experiment.
+    """Build the pairwise ML feature vector for a candidate product pair.
 
-    The feature names are intentionally kept stable because trained logistic
-    regression bundles persist them as the model contract.
+    Parameters
+    ----------
+    left, right:
+        Normalized products to compare.
+    block_keys:
+        Retrieval evidence keys used to derive lexical/trigram/vector
+        similarity features and exact-evidence flags.
+    semantic_sim:
+        Cosine similarity of the pair's dense embeddings.  ``0.0`` when
+        embeddings are unavailable.
+    rule_decision:
+        Output of ``evaluate_rule``.  When ``None``, all rule indicator
+        features are set to ``0.0``.
+
+    Returns
+    -------
+    dict mapping each column in ``DEFAULT_FEATURE_COLUMNS`` to a float.
     """
     shared_identifier_keys = {
         key for key in left.identifiers if left.identifiers.get(key) and left.identifiers.get(key) == right.identifiers.get(key)
@@ -154,14 +202,19 @@ def build_pair_features(
             exact["exact_retailer_sku"],
         ),
         "exact_sku_cross_retailer": float("sku" in shared_identifier_keys and left.retailer != right.retailer),
-        "rule_score": clamp01(rule_score),
-        "rule_auto_blocked": float(rule_auto_blocked),
+        "rule_certain_match": float(rule_decision is not None and rule_decision.certainty == MatchCertainty.CERTAIN_MATCH),
+        "rule_strong_match":  float(rule_decision is not None and rule_decision.certainty == MatchCertainty.STRONG_MATCH),
+        "rule_likely_match":  float(rule_decision is not None and rule_decision.certainty == MatchCertainty.LIKELY_MATCH),
+        "rule_certain_block": float(rule_decision is not None and rule_decision.certainty == MatchCertainty.CERTAIN_BLOCK),
         "lexical_sim": retrieval["lexical"],
         "trigram_sim": retrieval["trigram"],
         "semantic_sim": clamp01(semantic_sim),
         "retrieval_layer_count": retrieval_layer_count(retrieval, bool(shared_identifier_keys), semantic_sim),
         "variant_conflict": variant_conflict(left, right, left_salient=left_salient, right_salient=right_salient),
     }
+    features["feature_coverage_count"] = float(
+        sum(1 for col in _COVERAGE_INDICATORS if features.get(col, 0.0) > 0.0)
+    )
     return {column: float(features[column]) for column in DEFAULT_FEATURE_COLUMNS}
 
 
