@@ -19,7 +19,7 @@ Choose an embedding backend in `.env`: `CARTSY_EMBEDDING_PROVIDER=openai` uses O
 
 ## Train The Logistic Model
 
-Train from the augmented experiment dataset. The large augmented CSVs are local inputs and are intentionally ignored by git; the copies currently used here match `/Users/bernardorodrigues/Documents/Code/cartsy/data/dataset_v1_augmented.csv` and `/Users/bernardorodrigues/Documents/Code/cartsy/data/ground_truth_v1_augmented.csv`.
+Train from the augmented experiment dataset. The large augmented CSVs are local inputs and are intentionally ignored by git. Place your augmented dataset CSVs at `data/dataset_v1_augmented.csv` and `data/ground_truth_v1_augmented.csv` (or adjust the paths in the command below).
 
 ```bash
 .venv/bin/cartsy-dedupe train-model \

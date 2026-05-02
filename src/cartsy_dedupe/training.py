@@ -1,3 +1,18 @@
+"""Logistic-regression training pipeline for product pair scoring.
+
+Entry points:
+
+* ``augment_training_data`` — generate synthetic positive variants and
+  dirty-identifier hard negatives from a labeled base dataset.
+* ``train_logistic_regression`` — train, calibrate, and threshold-tune a
+  logistic-regression model from a labeled product CSV.
+
+Threshold selection uses stratified cross-validation, maximising F1 averaged
+across folds rather than fitting to a single held-out split.  Probability
+calibration (``CalibratedClassifierCV`` with isotonic regression) makes the
+output ``P(merge)`` values reliable so that a threshold near 0.50 is
+interpretable rather than an artifact of logit scaling on imbalanced data.
+"""
 from __future__ import annotations
 
 import csv
@@ -71,6 +86,15 @@ def augment_training_data(
     start_deduped_id: int = 500_000,
     seed: int = 7,
 ) -> dict[str, object]:
+    """Generate synthetic training data from a labeled product base set.
+
+    Creates ``duplicate_samples`` positive variants by applying randomized
+    mutations (title reorder, field removal, price jitter, etc.) that preserve
+    variant-critical attributes (size, pack count).  Creates
+    ``hard_negative_samples`` rows with injected shared identifiers and variant
+    conflicts to stress-test the model's ability to distinguish same-brand
+    variants with matching SKUs.
+    """
     rng = random.Random(seed)
     logger.info("Augment training data: loading input %s and ground truth %s", input_path, ground_truth_path)
     products = load_rows(input_path)

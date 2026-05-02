@@ -267,10 +267,12 @@ def strong_exact_merge_reason(features: Mapping[str, float]) -> str:
 
 
 def feature_vector(features: Mapping[str, float], columns: list[str] | tuple[str, ...] = DEFAULT_FEATURE_COLUMNS) -> list[float]:
+    """Return a dense float list aligned to ``columns``."""
     return [float(features.get(column, 0.0)) for column in columns]
 
 
 def hard_contradiction_features(features: Mapping[str, float]) -> bool:
+    """Return True if any hard-contradiction feature (size, pack, or variant conflict) is set."""
     return any(
         float(features.get(column, 0.0)) >= 1.0
         for column in ("size_conflict", "pack_conflict", "variant_conflict")
@@ -278,6 +280,12 @@ def hard_contradiction_features(features: Mapping[str, float]) -> bool:
 
 
 def salient_title_tokens(product: NormalizedProduct) -> set[str]:
+    """Extract title tokens that carry discriminative signal for a product.
+
+    Filters out stop-words, generic product-type tokens, brand tokens, and
+    category tokens.  Skips tokens that contain digits, which are better
+    handled by dedicated size and model-token features.
+    """
     brand_tokens = set(normalize_text(product.brand_raw or product.brand_norm).split())
     category_tokens = set(normalize_text(product.category_leaf or product.category_norm).split())
     tokens: set[str] = set()

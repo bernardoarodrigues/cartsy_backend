@@ -1,3 +1,20 @@
+"""Postgres + pgvector product deduplication pipeline.
+
+``DedupePipeline`` implements the full retrieval–score–cluster cycle:
+
+1. Exact key blocking (EAN/GTIN/UPC/ASIN/retailer SKU/canonical URL).
+2. Lexical full-text search retrieval (``tsvector`` + ``plainto_tsquery``).
+3. Trigram similarity blocking (``pg_trgm``).
+4. Vector nearest-neighbour retrieval (pgvector HNSW cosine) for products
+   with existing lexical or trigram signal.
+5. Dense pair embeddings computed for all candidate pairs (semantic_sim feature).
+6. Rule-based certainty evaluation (``evaluate_rule``) + logistic-regression
+   scoring for uncertain pairs.
+7. Union-Find cluster construction with contradiction guard.
+
+``run_pipeline`` orchestrates the pipeline stages, writes run artifacts, and
+returns a structured summary report.
+"""
 from __future__ import annotations
 
 import json
@@ -30,8 +47,6 @@ from cartsy_dedupe.scoring import MatchCertainty, evaluate_rule
 from cartsy_dedupe.storage import prepare_output_dir, write_outputs
 from cartsy_dedupe.utils.pipeline_cache import (
     cache_path_for,
-    candidate_pairs_from_records,
-    candidate_pairs_to_records,
     clustering_cache_key,
     code_fingerprint,
     embedding_cache_key,
@@ -39,11 +54,8 @@ from cartsy_dedupe.utils.pipeline_cache import (
     normalization_cache_dir,
     normalization_cache_key,
     normalize_module_hash,
-    pair_blocks_from_records,
-    pair_blocks_to_records,
     product_signature,
     read_embedding_cache,
-    read_normalization_cache,
     read_stage_cache,
     retrieval_layer_cache_key,
     retrieval_rows_from_records,
@@ -52,7 +64,6 @@ from cartsy_dedupe.utils.pipeline_cache import (
     scoring_cache_key,
     stage_env_fingerprint,
     write_embedding_cache,
-    write_normalization_cache,
     write_stage_cache,
 )
 from cartsy_dedupe.utils.pipeline_helpers import (
@@ -1151,15 +1162,8 @@ def run_pipeline(
     normalize_hash = normalize_module_hash()
     cache_key = normalization_cache_key(input_path=resolved_input_path, limit=limit, normalize_hash=normalize_hash)
     cache_path = normalization_cache_dir() / f"{cache_key}.json"
-    normalization_signature = ""
-    cache_used = False
     stage_cache_status: dict[str, dict[str, object]] = {
         "normalize_and_load_postgres": {"used": 0, "path": str(cache_path), "key": cache_key},
-    }
-    stage_caching_enabled = False
-    stage_cache_status["stage_caching"] = {
-        "enabled": int(stage_caching_enabled),
-        "reason": "disabled while logistic-regression scorer and eval artifacts are the source of truth",
     }
 
     print(f"loading {input_path}")
@@ -1175,34 +1179,9 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: normalize_and_load_postgres")
 
     def normalize_and_load_action():
-        nonlocal cache_used
-        cached_products = read_normalization_cache(cache_path) if stage_caching_enabled else None
-        if cached_products is not None:
-            products = cached_products
-            cache_used = True
-            print(f"loaded {len(products):,} normalized products from cache")
-            with dedupe_pipeline.connect() as conn:
-                dedupe_pipeline.reset_database(conn)
-                dedupe_pipeline.insert_products(conn, products)
-                dedupe_pipeline.insert_exact_keys(conn, products)
-        else:
-            products = dedupe_pipeline.normalize_rows(rows)
-            if stage_caching_enabled:
-                write_normalization_cache(
-                    cache_path,
-                    products=products,
-                    metadata={
-                        "cache_schema_version": 1,
-                        "input_path": str(resolved_input_path),
-                        "limit": limit,
-                        "normalize_hash": normalize_hash,
-                    },
-                )
-                print(f"saved normalized cache: {cache_path}")
-        return products
+        return dedupe_pipeline.normalize_rows(rows)
 
     products = run_stage("normalize_and_load_postgres", normalize_and_load_action, items=len(rows))
-    normalization_signature = product_signature(products)
     print(f"normalized {len(products):,} products")
     id_to_index = {product.source_id: index for index, product in enumerate(products)}
 
@@ -1244,45 +1223,15 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: retrieve_candidates")
 
     def retrieve_candidates_action():
-        cached = read_stage_cache(retrieval_path) if stage_caching_enabled else None
-        if cached is not None:
-            payload = cached["payload"]
-            pair_blocks = pair_blocks_from_records(payload.get("pair_blocks") or [])
-            blocking_stats = dict(payload.get("blocking_stats") or {})
-            dedupe_pipeline.embedding_count = int(payload.get("embedding_count") or 0)
-            stage_cache_status["retrieve_candidates"]["used"] = 1
-            return pair_blocks, blocking_stats
-
         pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(
             products,
             config=config,
             normalization_key=cache_key,
-            retrieval_env=retrieval_env if stage_caching_enabled else None,
-            retrieval_code=retrieval_code if stage_caching_enabled else None,
         )
-        if stage_caching_enabled:
-            write_stage_cache(
-                retrieval_path,
-                metadata={
-                    "stage": "retrieve_candidates",
-                    "normalization_key": cache_key,
-                    "normalization_signature": normalization_signature,
-                    "config": asdict(config),
-                    "env": retrieval_env,
-                    "code": retrieval_code,
-                },
-                payload={
-                    "pair_blocks": pair_blocks_to_records(pair_blocks),
-                    "blocking_stats": blocking_stats,
-                    "embedding_count": dedupe_pipeline.embedding_count,
-                },
-            )
         stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
         return pair_blocks, blocking_stats
 
     pair_blocks, blocking_stats = run_stage("retrieve_candidates", retrieve_candidates_action, items=len(products))
-    if "layers" not in stage_cache_status["retrieve_candidates"]:
-        stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
     print(f"generated {len(pair_blocks):,} candidate pairs")
 
     scoring_code = code_fingerprint("pipeline.py", "embeddings.py", "scoring.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
@@ -1298,37 +1247,12 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: score_candidates")
 
     def score_candidates_action():
-        cached = read_stage_cache(scoring_path) if stage_caching_enabled else None
-        if cached is not None:
-            payload = cached["payload"]
-            stage_cache_status["score_candidates"]["used"] = 1
-            return (
-                candidate_pairs_from_records(payload.get("candidate_pairs") or []),
-                int(payload.get("scored_candidate_pairs") or 0),
-            )
-
-        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(
+        return dedupe_pipeline.score_candidate_pairs(
             products,
             pair_blocks,
             config=config,
             normalization_key=cache_key,
         )
-        if stage_caching_enabled:
-            write_stage_cache(
-                scoring_path,
-                metadata={
-                    "stage": "score_candidates",
-                    "retrieval_key": retrieval_key,
-                    "normalization_signature": normalization_signature,
-                    "config": asdict(config),
-                    "code": scoring_code,
-                },
-                payload={
-                    "candidate_pairs": candidate_pairs_to_records(candidate_pairs),
-                    "scored_candidate_pairs": scored_candidate_pairs,
-                },
-            )
-        return candidate_pairs, scored_candidate_pairs
 
     candidate_pairs, scored_candidate_pairs = run_stage("score_candidates", score_candidates_action, items=len(pair_blocks))
 
@@ -1338,40 +1262,9 @@ def run_pipeline(
     stage_cache_status["cluster"] = {"used": 0, "path": str(cluster_path), "key": cluster_key}
 
     def cluster_action():
-        cached = read_stage_cache(cluster_path) if stage_caching_enabled else None
-        if cached is not None:
-            payload = cached["payload"]
-            clusters = dict(payload.get("clusters") or {})
-            cluster_stats = {
-                str(key): int(value)
-                for key, value in dict(payload.get("cluster_stats") or {}).items()
-            }
-            source_to_cluster = {
-                str(key): str(value)
-                for key, value in dict(payload.get("source_to_cluster") or {}).items()
-            }
-            stage_cache_status["cluster"]["used"] = 1
-            return clusters, cluster_stats, source_to_cluster
-
         dedupe_pipeline.dev_log("stage start: cluster")
         clusters, cluster_stats = dedupe_pipeline.build_clusters(products, candidate_pairs, id_to_index)
-        source_to_cluster = invert_clusters(clusters)
-        if stage_caching_enabled:
-            write_stage_cache(
-                cluster_path,
-                metadata={
-                    "stage": "cluster",
-                    "scoring_key": scoring_key,
-                    "normalization_signature": normalization_signature,
-                    "code": clustering_code,
-                },
-                payload={
-                    "clusters": clusters,
-                    "cluster_stats": cluster_stats,
-                    "source_to_cluster": source_to_cluster,
-                },
-            )
-        return clusters, cluster_stats, source_to_cluster
+        return clusters, cluster_stats, invert_clusters(clusters)
 
     clusters, cluster_stats, source_to_cluster = run_stage("cluster", cluster_action, items=len(candidate_pairs))
     elapsed_seconds = perf_counter() - started
@@ -1387,7 +1280,6 @@ def run_pipeline(
     report["run_id"] = output_path.name
     report["run_output_dir"] = str(output_path)
     report["normalization_cache"] = {
-        "used": int(cache_used),
         "path": str(cache_path),
         "normalize_hash": normalize_hash,
     }
