@@ -101,36 +101,6 @@ _COVERAGE_INDICATORS: tuple[str, ...] = (
     "rule_likely_match",
 )
 
-GENERIC_TITLE_TOKENS = {
-    "agua",
-    "body",
-    "capilar",
-    "condicionador",
-    "creme",
-    "deodorant",
-    "eau",
-    "facial",
-    "hair",
-    "kit",
-    "locao",
-    "lotion",
-    "mascara",
-    "oil",
-    "oleo",
-    "parfum",
-    "pecas",
-    "perfume",
-    "produto",
-    "produtos",
-    "serum",
-    "shampoo",
-    "spray",
-    "toilette",
-    "unidade",
-    "unidades",
-    "vodka",
-}
-
 
 def build_pair_features(
     left: NormalizedProduct,
@@ -282,9 +252,9 @@ def hard_contradiction_features(features: Mapping[str, float]) -> bool:
 def salient_title_tokens(product: NormalizedProduct) -> set[str]:
     """Extract title tokens that carry discriminative signal for a product.
 
-    Filters out stop-words, generic product-type tokens, brand tokens, and
-    category tokens.  Skips tokens that contain digits, which are better
-    handled by dedicated size and model-token features.
+    Filters out stop-words, brand tokens, and category tokens.  Skips tokens
+    that contain digits, which are better handled by dedicated size and
+    model-token features.
     """
     brand_tokens = set(normalize_text(product.brand_raw or product.brand_norm).split())
     category_tokens = set(normalize_text(product.category_leaf or product.category_norm).split())
@@ -292,7 +262,7 @@ def salient_title_tokens(product: NormalizedProduct) -> set[str]:
     for token in normalize_text(product.name_raw or product.name_norm).split():
         if len(token) <= 2:
             continue
-        if token in STOPWORDS or token in GENERIC_TITLE_TOKENS or token in brand_tokens or token in category_tokens:
+        if token in STOPWORDS or token in brand_tokens or token in category_tokens:
             continue
         if re.search(r"\d", token):
             continue
