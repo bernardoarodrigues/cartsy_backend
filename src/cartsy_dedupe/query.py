@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+from .embeddings import EmbeddingProvider
 from .text import normalize_text
 
 try:
@@ -128,19 +129,11 @@ def search_products_postgres(run_dir: str | Path, query: str, *, limit: int = 10
 
 
 def make_query_embedding(query: str) -> list[float] | None:
-    if not os.getenv("OPENAI_API_KEY"):
-        return None
     try:
-        from openai import OpenAI
-    except ImportError:  # pragma: no cover - dependency is installed in the project venv.
-        return None
-    model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    client = OpenAI()
-    try:
-        response = client.embeddings.create(model=model, input=[f"title: {query}"])
+        result = EmbeddingProvider().embed_texts([f"title: {query}"])
     except Exception:
         return None
-    return list(response.data[0].embedding)
+    return list(result.embeddings[0])
 
 
 def register_pgvector(conn: object) -> None:

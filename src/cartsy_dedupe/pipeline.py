@@ -15,13 +15,13 @@ from tqdm import tqdm
 
 from cartsy_dedupe.clustering import build_clusters
 from cartsy_dedupe.config import PipelineConfig
-from cartsy_dedupe.features import (
-    DEFAULT_FEATURE_COLUMNS,
-    build_pair_features,
-    feature_vector,
-    hard_contradiction_features,
-    strong_exact_merge_reason,
+from cartsy_dedupe.embeddings import (
+    EmbeddingProvider,
+    configured_embedding_dimensions,
+    configured_embedding_model,
+    embedding_provider_name,
 )
+from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, feature_vector, hard_contradiction_features
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.reporting import build_summary_report
@@ -56,12 +56,9 @@ from cartsy_dedupe.utils.pipeline_cache import (
     write_stage_cache,
 )
 from cartsy_dedupe.utils.pipeline_helpers import (
-    ExtractedAttributes,
     batched,
     embedding_text,
-    ensure_openai_api_key,
     exact_keys,
-    extracted_attribute_score,
     invert_clusters,
     product_search_text,
 )
@@ -81,11 +78,6 @@ try:  # pragma: no cover - import failure is exercised only in incomplete envs.
 except ImportError:  # pragma: no cover
     psycopg = None
     register_vector = None
-
-try:  # pragma: no cover - external package availability is covered by smoke runs.
-    from openai import OpenAI
-except ImportError:  # pragma: no cover
-    OpenAI = None
 
 try:  # pragma: no cover - import failure is exercised only in incomplete envs.
     from joblib import load as joblib_load
@@ -145,17 +137,16 @@ class RowRetrievalProfile:
 
 
 class DedupePipeline:
-    """Postgres + pgvector + OpenAI implementation of the architecture doc."""
+    """Postgres + pgvector implementation of the dedupe architecture."""
 
-    name = "postgres_openai"
+    name = "postgres_pgvector"
 
     def __init__(self, *, dev: bool = False) -> None:
         load_dotenv(dotenv_path=Path.cwd() / ".env")
         self.database_url = os.getenv("DATABASE_URL", "postgresql://cartsy:cartsy@localhost:5432/cartsy_matcher")
-        self.embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-        self.extraction_model = os.getenv("OPENAI_EXTRACTION_MODEL", "gpt-5.4-nano")
+        self.embedding_provider = embedding_provider_name()
+        self.embedding_model = configured_embedding_model(self.embedding_provider)
         self.embedding_batch_size = int(os.getenv("CARTSY_EMBEDDING_BATCH_SIZE", "128"))
-        self.llm_extraction_limit = int(os.getenv("CARTSY_LLM_EXTRACTION_LIMIT", "100"))
         self.fts_candidates = int(os.getenv("CARTSY_FTS_CANDIDATES", "25"))
         self.trigram_candidates = int(os.getenv("CARTSY_TRIGRAM_CANDIDATES", "25"))
         self.trigram_min_similarity = float(os.getenv("CARTSY_TRIGRAM_MIN_SIMILARITY", "0.55"))
@@ -164,12 +155,10 @@ class DedupePipeline:
         self.vector_min_fts_rank = float(os.getenv("CARTSY_VECTOR_MIN_FTS_RANK", "0.08"))
         self.vector_min_trigram_similarity = float(os.getenv("CARTSY_VECTOR_MIN_TRIGRAM_SIMILARITY", "0.60"))
         self.vector_include_neighbors = env_flag("CARTSY_VECTOR_INCLUDE_NEIGHBORS", True)
-        self.embedding_dimensions = int(os.getenv("CARTSY_EMBEDDING_DIMENSIONS", "1536"))
-        self.extracted_by_source_id: dict[str, dict[str, Any]] = {}
+        self.embedding_dimensions = configured_embedding_dimensions(self.embedding_provider, self.embedding_model)
         self.ml_model_bundle: dict[str, Any] | None = None
         self.embedding_count = 0
         self.embedding_cache_hit_count = 0
-        self.extraction_count = 0
         self.metrics = RunMetrics()
         self.dev = dev
         self.retrieval_layer_cache_status: dict[str, dict[str, object]] = {}
@@ -265,10 +254,6 @@ class DedupePipeline:
                 retrieval_env=retrieval_env,
                 retrieval_code=retrieval_code,
             )
-            # LLM attribute extraction is intentionally disabled for the ML-first
-            # scorer. Variant and contradiction handling now comes from explicit
-            # pair features plus the hard contradiction gate.
-            self.extracted_by_source_id = {}
         stats = {
             "candidate_cap_reached": int(config.max_candidate_pairs is not None and len(pair_blocks) >= config.max_candidate_pairs),
             "exact_pairs": layer_counts.get("exact", 0),
@@ -283,9 +268,8 @@ class DedupePipeline:
             ),
             "skipped_blocks": 0,
             "oversized_block_rows": 0,
-            "openai_embeddings_created": self.embedding_count,
+            "embeddings_created": self.embedding_count,
             "cached_embeddings_reused": self.embedding_cache_hit_count,
-            "openai_extractions_created": self.extraction_count,
         }
         stats.update(
             {
@@ -409,16 +393,15 @@ class DedupePipeline:
         report["pipeline"] = self.name
         report["architecture_notes"] = {
             "database": "Postgres with pg_trgm, full-text search, and pgvector",
+            "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
-            "extraction_model": self.extraction_model,
-            "llm_attribute_extraction": "disabled",
             "cascade": "exact keys -> full-text retrieval -> trigram retrieval -> vector retrieval -> dense pair embeddings -> logistic regression",
         }
         return report
 
     def connect(self):
         if psycopg is None:
-            raise RuntimeError("Install psycopg[binary] and pgvector before running the postgres_openai pipeline.")
+            raise RuntimeError("Install psycopg[binary] and pgvector before running the Postgres pipeline.")
         try:
             conn = psycopg.connect(self.database_url)
         except Exception as exc:  # pragma: no cover - depends on local service state.
@@ -430,7 +413,7 @@ class DedupePipeline:
 
     def reset_database(self, conn) -> None:
         if register_vector is None:
-            raise RuntimeError("Install pgvector before running the postgres_openai pipeline.")
+            raise RuntimeError("Install pgvector before running the Postgres pipeline.")
         vector_type = f"vector({self.embedding_dimensions})"
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -469,7 +452,6 @@ class DedupePipeline:
                     model_tokens TEXT[] NOT NULL,
                     identifiers JSONB NOT NULL,
                     quality_flags TEXT[] NOT NULL,
-                    extracted_attributes JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     search_text TEXT NOT NULL,
                     search_vector TSVECTOR,
                     embedding {vector_type}
@@ -489,7 +471,6 @@ class DedupePipeline:
             cur.execute("CREATE INDEX idx_cartsy_products_search ON cartsy_products USING GIN (search_vector)")
             cur.execute("CREATE INDEX idx_cartsy_products_title_trgm ON cartsy_products USING GIN (name_norm gin_trgm_ops)")
             cur.execute("CREATE INDEX idx_cartsy_products_title_trgm_gist ON cartsy_products USING GiST (name_norm gist_trgm_ops)")
-            cur.execute("CREATE INDEX idx_cartsy_products_attrs ON cartsy_products USING GIN (extracted_attributes)")
             cur.execute("CREATE INDEX idx_cartsy_exact_keys ON cartsy_exact_keys (key_type, key_value)")
         conn.commit()
 
@@ -566,77 +547,6 @@ class DedupePipeline:
                     copy.write_row(row)
         conn.commit()
 
-    def extract_candidate_attributes(self, conn, pair_blocks: PairBlocks) -> None:
-        if self.llm_extraction_limit <= 0:
-            return
-        candidate_indexes = sorted({index for pair in pair_blocks for index in pair})
-        if not candidate_indexes:
-            return
-        if OpenAI is None:
-            raise RuntimeError("Install openai before running LLM attribute extraction.")
-        ensure_openai_api_key()
-        client = OpenAI()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT source_id, brand_raw, name_raw, category_raw, description_raw, specs_raw
-                FROM cartsy_products
-                WHERE source_index = ANY(%s)
-                  AND extracted_attributes = '{}'::jsonb
-                ORDER BY source_index
-                LIMIT %s
-                """,
-                (candidate_indexes, self.llm_extraction_limit),
-            )
-            rows = cur.fetchall()
-
-        self.dev_log(f"extracting attributes for up to {len(rows):,} candidate products")
-        for source_id, brand, title, category, description, specs in self.progress(
-            rows,
-            total=len(rows),
-            desc="extract attrs",
-            unit="product",
-        ):
-            attrs = self.extract_attributes_with_openai(client, brand, title, category, description, specs)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE cartsy_products SET extracted_attributes = %s::jsonb WHERE source_id = %s",
-                    (json.dumps(attrs, ensure_ascii=False), source_id),
-                )
-            self.extraction_count += 1
-        conn.commit()
-
-    def extract_attributes_with_openai(
-        self,
-        client: Any,
-        brand: str,
-        title: str,
-        category: str,
-        description: str,
-        specs: str,
-    ) -> dict[str, Any]:
-        prompt = (
-            "Extract product matching attributes. Use null when unknown. "
-            "Separate parent product line from variant details like variant name, size, color, scent, flavor, material, and pack count.\n\n"
-            f"Brand: {brand}\nTitle: {title}\nCategory: {category}\nDescription: {description[:1500]}\nSpecs: {specs[:1500]}"
-        )
-        response = client.responses.parse(
-            model=self.extraction_model,
-            input=[
-                {
-                    "role": "system",
-                    "content": "You extract structured retail product attributes for deduplication. Return only schema fields.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            text_format=ExtractedAttributes,
-        )
-        self.metrics.add_usage(self.extraction_model, getattr(response, "usage", None))
-        parsed = response.output_parsed
-        if parsed is None:
-            return {}
-        return parsed.model_dump(exclude_none=True)
-
     def embed_products(
         self,
         conn,
@@ -649,10 +559,7 @@ class DedupePipeline:
         if self.vector_candidates <= 0 and not force:
             self.dev_log("skipping embedding generation because CARTSY_VECTOR_CANDIDATES <= 0")
             return
-        if OpenAI is None:
-            raise RuntimeError("Install openai before running embedding generation.")
-        ensure_openai_api_key()
-        client = OpenAI()
+        embedder = EmbeddingProvider(provider=self.embedding_provider, model=self.embedding_model)
         only_indexes = only_indexes or set()
         exclude_indexes = exclude_indexes or set()
         if only_indexes:
@@ -705,6 +612,7 @@ class DedupePipeline:
             embedding_code = code_fingerprint("utils/pipeline_helpers.py")
             embedding_cache_id = embedding_cache_key(
                 normalization_key=normalization_key,
+                embedding_provider=self.embedding_provider,
                 embedding_model=self.embedding_model,
                 embedding_dimensions=self.embedding_dimensions,
                 code=embedding_code,
@@ -714,6 +622,7 @@ class DedupePipeline:
             embedding_cache_metadata = {
                 "stage": "product_embeddings",
                 "normalization_key": normalization_key,
+                "embedding_provider": self.embedding_provider,
                 "embedding_model": self.embedding_model,
                 "embedding_dimensions": self.embedding_dimensions,
                 "code": embedding_code,
@@ -760,18 +669,19 @@ class DedupePipeline:
                 )
                 for row in batch
             ]
-            response = client.embeddings.create(model=self.embedding_model, input=texts)
-            self.metrics.add_usage(self.embedding_model, getattr(response, "usage", None))
-            updates = [(item.embedding, row[0]) for item, row in zip(response.data, batch, strict=True)]
+            result = embedder.embed_texts(texts)
+            if result.usage is not None:
+                self.metrics.add_usage(self.embedding_model, result.usage)
+            updates = [(embedding, row[0]) for embedding, row in zip(result.embeddings, batch, strict=True)]
             with conn.cursor() as cur:
                 cur.executemany("UPDATE cartsy_products SET embedding = %s WHERE source_id = %s", updates)
             self.embedding_count += len(updates)
             print(f"embedded {self.embedding_count:,} products")
             if embedding_cache_path is not None and embedding_cache_metadata is not None:
-                for item, row, text in zip(response.data, batch, texts, strict=True):
+                for embedding, row, text in zip(result.embeddings, batch, texts, strict=True):
                     embedding_cache_entries[row[0]] = {
                         "text_hash": embedding_text_hash(text),
-                        "embedding": item.embedding,
+                        "embedding": embedding,
                     }
                 write_embedding_cache(
                     embedding_cache_path,
@@ -787,16 +697,6 @@ class DedupePipeline:
                 """
             )
         conn.commit()
-
-    def load_extracted_attributes(self, conn, products: list[NormalizedProduct]) -> None:
-        with conn.cursor() as cur:
-            cur.execute("SELECT source_id, extracted_attributes FROM cartsy_products WHERE extracted_attributes <> '{}'::jsonb")
-            self.extracted_by_source_id = {source_id: attrs for source_id, attrs in cur.fetchall()}
-        products_by_id = {product.source_id: product for product in products}
-        for source_id, attrs in self.extracted_by_source_id.items():
-            product = products_by_id.get(source_id)
-            if product is not None:
-                product.extracted_attributes = attrs
 
     def retrieve_candidate_pairs(
         self,
@@ -1146,43 +1046,26 @@ class DedupePipeline:
     ) -> CandidatePair:
         rule_result = score_pair(left, right, merge_threshold=config.merge_threshold)
         retrieval = postgres_retrieval_features(block_keys)
-        pair_features = build_pair_features(
-            left,
-            right,
-            block_keys,
-            semantic_sim=semantic_sim,
-            rule_score=rule_result.score,
-            rule_auto_blocked=rule_result.auto_blocked,
-        )
-        attr_score, attr_relation, attr_reasons = extracted_attribute_score(
-            self.extracted_by_source_id.get(left.source_id, {}),
-            self.extracted_by_source_id.get(right.source_id, {}),
-        )
+        pair_features = build_pair_features(left, right, block_keys, semantic_sim=semantic_sim)
         ml_score = self.predict_ml_score(pair_features)
         threshold = self.ml_threshold(config.merge_threshold)
 
         hard_contradiction = (
             rule_result.auto_blocked
-            or attr_relation == "same_parent_different_variant"
             or hard_contradiction_features(pair_features)
         )
-        exact_merge_reason = strong_exact_merge_reason(pair_features)
-        exact_merge = bool(exact_merge_reason and not hard_contradiction)
         relation = "same_parent_different_variant" if hard_contradiction else "exact_match"
         score = ml_score
         if hard_contradiction:
             relation = "same_parent_different_variant"
             score = min(score, threshold - 0.01)
-        elif exact_merge:
-            relation = exact_merge_reason
-            score = max(score, pair_features["exact_evidence_strength"], threshold)
         elif score < threshold and score >= config.near_miss_threshold:
             relation = "similar_related_product"
         elif score < config.near_miss_threshold:
             relation = "no_match"
 
         score = max(0.0, min(1.0, score))
-        decision = "merge" if not hard_contradiction and (exact_merge or ml_score >= threshold) else "no_merge"
+        decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
         explanations = [
             f"relation:{relation}",
             f"ml_score:{ml_score:.2f}",
@@ -1193,11 +1076,9 @@ class DedupePipeline:
             f"trigram:{retrieval['trigram']:.2f}",
             f"vector:{retrieval['vector']:.2f}",
             f"semantic:{semantic_sim:.2f}",
-            f"llm_attrs:{attr_score:.2f}",
         ]
         if rule_result.explanation:
             explanations.append(rule_result.explanation)
-        explanations.extend(attr_reasons[:4])
         feature_scores = {
             **rule_result.feature_scores,
             "postgres_exact": retrieval["exact"],
@@ -1205,10 +1086,8 @@ class DedupePipeline:
             "postgres_trigram": retrieval["trigram"],
             "postgres_vector": retrieval["vector"],
             "semantic_sim": semantic_sim,
-            "llm_attributes": attr_score,
             "ml_score": ml_score,
             "ml_threshold": threshold,
-            "exact_merge": float(exact_merge),
             "hard_contradiction": float(hard_contradiction),
         }
         feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})
@@ -1319,10 +1198,10 @@ def run_pipeline(
 
     retrieval_env = stage_env_fingerprint(
         [
+            "CARTSY_EMBEDDING_PROVIDER",
+            "CARTSY_EMBEDDING_MODEL",
             "OPENAI_EMBEDDING_MODEL",
-            "OPENAI_EXTRACTION_MODEL",
             "CARTSY_EMBEDDING_BATCH_SIZE",
-            "CARTSY_LLM_EXTRACTION_LIMIT",
             "CARTSY_FTS_CANDIDATES",
             "CARTSY_TRIGRAM_CANDIDATES",
             "CARTSY_TRIGRAM_MIN_SIMILARITY",
@@ -1334,7 +1213,14 @@ def run_pipeline(
             "CARTSY_EMBEDDING_DIMENSIONS",
         ]
     )
-    retrieval_code = code_fingerprint("pipeline.py", "scoring.py", "normalize.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
+    retrieval_code = code_fingerprint(
+        "pipeline.py",
+        "embeddings.py",
+        "scoring.py",
+        "normalize.py",
+        "utils/pipeline_helpers.py",
+        "utils/pipeline_sql.py",
+    )
     retrieval_key = retrieval_cache_key(
         normalization_key=cache_key,
         config=config,
@@ -1353,15 +1239,7 @@ def run_pipeline(
             payload = cached["payload"]
             pair_blocks = pair_blocks_from_records(payload.get("pair_blocks") or [])
             blocking_stats = dict(payload.get("blocking_stats") or {})
-            extracted_by_source_id = dict(payload.get("extracted_by_source_id") or {})
-            dedupe_pipeline.extracted_by_source_id = extracted_by_source_id
             dedupe_pipeline.embedding_count = int(payload.get("embedding_count") or 0)
-            dedupe_pipeline.extraction_count = int(payload.get("extraction_count") or 0)
-            products_by_id = {product.source_id: product for product in products}
-            for source_id, attrs in extracted_by_source_id.items():
-                product = products_by_id.get(source_id)
-                if product is not None:
-                    product.extracted_attributes = dict(attrs or {})
             stage_cache_status["retrieve_candidates"]["used"] = 1
             return pair_blocks, blocking_stats
 
@@ -1386,9 +1264,7 @@ def run_pipeline(
                 payload={
                     "pair_blocks": pair_blocks_to_records(pair_blocks),
                     "blocking_stats": blocking_stats,
-                    "extracted_by_source_id": dedupe_pipeline.extracted_by_source_id,
                     "embedding_count": dedupe_pipeline.embedding_count,
-                    "extraction_count": dedupe_pipeline.extraction_count,
                 },
             )
         stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
@@ -1399,7 +1275,7 @@ def run_pipeline(
         stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
     print(f"generated {len(pair_blocks):,} candidate pairs")
 
-    scoring_code = code_fingerprint("pipeline.py", "scoring.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
+    scoring_code = code_fingerprint("pipeline.py", "embeddings.py", "scoring.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
     scoring_key = scoring_cache_key(
         retrieval_key=retrieval_key,
         config=config,
@@ -1511,8 +1387,8 @@ def run_pipeline(
         "started_at_utc": run_started_at.isoformat(),
     }
     report["metrics"] = dedupe_pipeline.metrics.as_report(
+        embedding_provider=dedupe_pipeline.embedding_provider,
         embedding_model=dedupe_pipeline.embedding_model,
-        extraction_model=dedupe_pipeline.extraction_model,
         input_records=len(products),
         total_elapsed_seconds=elapsed_seconds,
     )
@@ -1537,8 +1413,8 @@ def run_pipeline(
     report["run_timestamps"]["ended_at_utc"] = run_ended_at.isoformat()
     report["run_timestamps"]["elapsed_seconds"] = round(elapsed_seconds, 3)
     report["metrics"] = dedupe_pipeline.metrics.as_report(
+        embedding_provider=dedupe_pipeline.embedding_provider,
         embedding_model=dedupe_pipeline.embedding_model,
-        extraction_model=dedupe_pipeline.extraction_model,
         input_records=len(products),
         total_elapsed_seconds=elapsed_seconds,
     )
@@ -1548,10 +1424,8 @@ def run_pipeline(
 
 __all__ = [
     "DedupePipeline",
-    "ExtractedAttributes",
     "RunMetrics",
     "embedding_text",
-    "extracted_attribute_score",
     "postgres_retrieval_features",
     "run_pipeline",
 ]

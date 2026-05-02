@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .embeddings import EmbeddingProvider, configured_embedding_dimensions
 from .query import make_query_embedding, register_pgvector
 from .text import normalize_text
 
@@ -50,7 +51,7 @@ def index_artifacts(
     docs = build_artifact_documents(run_dir)
     resolved_run_id = run_id or Path(run_dir).resolve().name
     database_url = os.getenv("DATABASE_URL", "postgresql://cartsy:cartsy@localhost:5432/cartsy_matcher")
-    embedding_dimensions = int(os.getenv("CARTSY_EMBEDDING_DIMENSIONS", "1536"))
+    embedding_dimensions = configured_embedding_dimensions()
     with psycopg.connect(database_url) as conn:
         register_pgvector(conn)
         ensure_artifact_index(conn, embedding_dimensions=embedding_dimensions)
@@ -87,7 +88,7 @@ def index_artifacts(
             )
         conn.commit()
         embedded = 0
-        if embed and os.getenv("OPENAI_API_KEY"):
+        if embed:
             embedded = embed_artifacts(conn, resolved_run_id, docs, batch_size=batch_size)
     return {"run_id": resolved_run_id, "artifact_count": len(docs), "embeddings_created": embedded}
 
@@ -172,17 +173,12 @@ def ensure_artifact_index(conn: object, *, embedding_dimensions: int) -> None:
 
 
 def embed_artifacts(conn: object, run_id: str, docs: list[ArtifactDocument], *, batch_size: int) -> int:
-    try:
-        from openai import OpenAI
-    except ImportError:  # pragma: no cover - dependency is installed in the project venv.
-        return 0
-    model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    client = OpenAI()
+    embedder = EmbeddingProvider()
     embedded = 0
     for batch in batched(docs, batch_size):
         texts = [embedding_text_for_artifact(doc) for doc in batch]
-        response = client.embeddings.create(model=model, input=texts)
-        updates = [(item.embedding, run_id, doc.artifact_id) for item, doc in zip(response.data, batch, strict=True)]
+        result = embedder.embed_texts(texts)
+        updates = [(embedding, run_id, doc.artifact_id) for embedding, doc in zip(result.embeddings, batch, strict=True)]
         with conn.cursor() as cur:
             cur.executemany(
                 "UPDATE cartsy_artifact_index SET embedding = %s WHERE run_id = %s AND artifact_id = %s",

@@ -89,4 +89,3 @@ def test_normalization_does_not_guess_open_ended_variant_terms() -> None:
     assert not hasattr(product, "color")
     assert not hasattr(product, "shade")
     assert not hasattr(product, "scent")
-    assert product.extracted_attributes == {}

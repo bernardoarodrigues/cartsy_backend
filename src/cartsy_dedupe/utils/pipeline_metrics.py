@@ -7,8 +7,8 @@ from time import perf_counter
 from typing import Any
 
 USD_PER_1M_TOKENS: dict[str, dict[str, float]] = {
-    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
     "text-embedding-3-small": {"input": 0.02},
+    "text-embedding-3-large": {"input": 0.13},
 }
 
 
@@ -108,8 +108,8 @@ class RunMetrics:
     def as_report(
         self,
         *,
+        embedding_provider: str,
         embedding_model: str,
-        extraction_model: str,
         input_records: int,
         total_elapsed_seconds: float,
     ) -> dict[str, object]:
@@ -126,11 +126,10 @@ class RunMetrics:
                 "stages": {name: metric.as_report() for name, metric in self.stages.items()},
             },
             "openai": {
+                "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
-                "extraction_model": extraction_model,
                 "usage_by_model": usage_by_model,
                 "total_estimated_cost_usd": round(total_cost, 6),
-                "cost_source": "OpenAI standard pricing checked 2026-04-30; update USD_PER_1M_TOKENS if model prices change.",
+                "cost_source": "OpenAI standard pricing checked 2026-04-30; sentence-transformers embeddings run locally and do not add OpenAI usage.",
             },
         }
-

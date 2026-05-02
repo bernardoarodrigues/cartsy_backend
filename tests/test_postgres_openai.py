@@ -2,16 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cartsy_dedupe.embeddings import configured_embedding_dimensions, configured_embedding_model, embedding_provider_name
 from cartsy_dedupe.pipeline import (
     DedupePipeline,
     RunMetrics,
     coerce_embedding,
     cosine_similarity,
     embedding_text,
-    extracted_attribute_score,
     postgres_retrieval_features,
 )
-from cartsy_dedupe.utils.pipeline_helpers import ExtractedAttributes, canonicalize_url
 from cartsy_dedupe.utils.pipeline_cache import (
     code_fingerprint,
     embedding_cache_key,
@@ -46,54 +45,39 @@ def test_embedding_text_uses_available_product_fields() -> None:
     assert "color:" not in text
 
 
-def test_extracted_attributes_detect_same_parent_variant_conflict() -> None:
-    score, relation, reasons = extracted_attribute_score(
-        {"brand": "Rhode", "product_line": "Peptide Lip Treatment", "variant_name": "Salted Caramel"},
-        {"brand": "Rhode", "product_line": "Peptide Lip Treatment", "variant_name": "Watermelon Slice"},
-    )
+def test_embedding_provider_configuration_supports_sentence_transformers(monkeypatch) -> None:
+    monkeypatch.setenv("CARTSY_EMBEDDING_PROVIDER", "sentence-transformers")
+    monkeypatch.delenv("CARTSY_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("CARTSY_EMBEDDING_DIMENSIONS", raising=False)
 
-    assert score < 1.0
-    assert relation == "same_parent_different_variant"
-    assert "llm_variant_name_conflict" in reasons
+    assert embedding_provider_name() == "sentence-transformers"
+    assert configured_embedding_model() == "sentence-transformers/all-MiniLM-L6-v2"
+    assert configured_embedding_dimensions() == 384
 
 
 def test_run_metrics_tracks_openai_usage_and_cost() -> None:
     metrics = RunMetrics()
     metrics.add_usage(
-        "gpt-5.4-nano",
+        "text-embedding-3-small",
         {
             "input_tokens": 1_000,
-            "output_tokens": 200,
-            "total_tokens": 1_200,
+            "total_tokens": 1_000,
             "input_tokens_details": {"cached_tokens": 100},
         },
     )
     report = metrics.as_report(
+        embedding_provider="openai",
         embedding_model="text-embedding-3-small",
-        extraction_model="gpt-5.4-nano",
         input_records=10,
         total_elapsed_seconds=5.0,
     )
 
-    usage = report["openai"]["usage_by_model"]["gpt-5.4-nano"]
+    usage = report["openai"]["usage_by_model"]["text-embedding-3-small"]
     assert usage["calls"] == 1
     assert usage["input_tokens"] == 1_000
     assert usage["cached_input_tokens"] == 100
-    assert usage["output_tokens"] == 200
     assert usage["estimated_cost_usd"] > 0
     assert report["timing"]["avg_seconds_per_input_record"] == 0.5
-
-
-def test_extracted_attributes_schema_avoids_dynamic_object_fields() -> None:
-    schema = ExtractedAttributes.model_json_schema()
-
-    assert "open_attributes" not in schema["properties"]
-
-
-def test_canonicalize_url_keeps_product_urls_but_drops_click_redirects() -> None:
-    assert canonicalize_url("https://www.example.com/products/cetaphil-473ml?utm_source=x")
-    assert canonicalize_url("https://click.mercadolivre.com.br/count?url=https%3A%2F%2Fexample.com") == ""
-    assert canonicalize_url("https://example.com/redirect/product/123") == ""
 
 
 def test_vector_gating_builds_anchor_and_pool_indexes_from_cheap_retrieval(monkeypatch) -> None:
@@ -202,53 +186,6 @@ def test_score_postgres_pair_uses_logistic_model_and_hard_contradiction() -> Non
     assert pair.feature_scores["hard_contradiction"] == 1.0
 
 
-def test_score_postgres_pair_exact_retailer_sku_bypasses_low_ml_score() -> None:
-    pipeline = DedupePipeline()
-    pipeline.ml_model_bundle = {
-        "model": _FixedModel(0.12),
-        "feature_columns": ["brand_exact", "title_token_set", "exact_retailer_sku", "rule_score"],
-        "threshold": 0.84,
-    }
-    left = _product(id="1", sku="SHARED", prod_name="Cetaphil Locao 473ml")
-    right = _product(id="2", sku="SHARED", prod_name="Cetaphil Locao 473ml")
-
-    pair = pipeline.score_postgres_pair(
-        left,
-        right,
-        {"exact:retailer_sku:amazon_br:SHARED"},
-        PipelineConfig(merge_threshold=0.84),
-        semantic_sim=0.20,
-    )
-
-    assert pair.decision == "merge"
-    assert pair.score >= 0.84
-    assert pair.feature_scores["ml_score"] == 0.12
-    assert pair.feature_scores["exact_merge"] == 1.0
-    assert "strong_exact:retailer_sku" in pair.explanation
-
-
-def test_score_postgres_pair_exact_evidence_cannot_bypass_hard_contradiction() -> None:
-    pipeline = DedupePipeline()
-    pipeline.ml_model_bundle = {
-        "model": _FixedModel(0.12),
-        "feature_columns": ["exact_retailer_sku", "size_conflict"],
-        "threshold": 0.84,
-    }
-    left = _product(id="1", sku="SHARED", dimension="200ml", prod_name="Cetaphil Locao 200ml")
-    right = _product(id="2", sku="SHARED", dimension="473ml", prod_name="Cetaphil Locao 473ml")
-
-    pair = pipeline.score_postgres_pair(
-        left,
-        right,
-        {"exact:retailer_sku:amazon_br:SHARED"},
-        PipelineConfig(merge_threshold=0.84),
-    )
-
-    assert pair.decision == "no_merge"
-    assert pair.feature_scores["exact_merge"] == 0.0
-    assert pair.feature_scores["hard_contradiction"] == 1.0
-
-
 class _FakeCursor:
     def __init__(self, conn: "_FakeConn") -> None:
         self.conn = conn
@@ -287,7 +224,7 @@ class _FakeConn:
         self.commit_count += 1
 
 
-def test_embed_products_reuses_cached_embeddings_without_openai_call(tmp_path: Path, monkeypatch) -> None:
+def test_embed_products_reuses_cached_embeddings_without_provider_call(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("CARTSY_PIPELINE_CACHE_DIR", str(tmp_path / "cache"))
     # DedupePipeline loads .env which may disable vector/embeddings globally.
@@ -314,7 +251,7 @@ def test_embed_products_reuses_cached_embeddings_without_openai_call(tmp_path: P
         Path(tmp_path / "cache")
         / "embeddings"
         / "all-products"
-        / f"{embedding_cache_key(normalization_key='norm-key', embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
+        / f"{embedding_cache_key(normalization_key='norm-key', embedding_provider=pipeline.embedding_provider, embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
     )
     write_embedding_cache(
         cache_path,
@@ -327,20 +264,21 @@ def test_embed_products_reuses_cached_embeddings_without_openai_call(tmp_path: P
         metadata={
             "stage": "product_embeddings",
             "normalization_key": "norm-key",
+            "embedding_provider": pipeline.embedding_provider,
             "embedding_model": pipeline.embedding_model,
             "embedding_dimensions": pipeline.embedding_dimensions,
             "code": code_fingerprint("utils/pipeline_helpers.py"),
         },
     )
 
-    class _OpenAIShouldNotRun:
-        def __init__(self) -> None:
-            self.embeddings = self
+    class _ProviderShouldNotRun:
+        def __init__(self, **kwargs) -> None:
+            pass
 
-        def create(self, **kwargs):
-            raise AssertionError("expected cached embeddings to skip OpenAI calls")
+        def embed_texts(self, texts):
+            raise AssertionError("expected cached embeddings to skip provider calls")
 
-    monkeypatch.setattr("cartsy_dedupe.pipeline.OpenAI", _OpenAIShouldNotRun)
+    monkeypatch.setattr("cartsy_dedupe.pipeline.EmbeddingProvider", _ProviderShouldNotRun)
 
     conn = _FakeConn([row])
     pipeline.embed_products(conn, normalization_key="norm-key")

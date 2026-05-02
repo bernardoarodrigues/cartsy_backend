@@ -93,7 +93,7 @@ else:
 
 Strong exact evidence means shared global identifiers, ASIN, same-retailer SKU, or a trusted canonical product URL. Canonical URLs are only inserted into the exact-key table when they look like product pages; click/count/redirect/tracking URLs are ignored.
 
-Hard contradictions include deterministic size conflicts, pack conflicts, variant conflicts, the existing rule scorer's hard blocks, and any still-present structured attribute conflict. LLM attribute extraction is currently disabled, so normal runtime contradictions come from deterministic and ML feature evidence.
+Hard contradictions include deterministic size conflicts, pack conflicts, variant conflicts, and the existing rule scorer's hard blocks. Runtime contradictions come from deterministic and ML feature evidence.
 
 Trade-off: exact identifiers recover the high-precision deterministic behavior that should not be vetoed by a weakly calibrated model, while logistic regression remains the inspectable decision surface for ambiguous lexical, trigram, vector, semantic, and rule-score evidence.
 
@@ -115,7 +115,7 @@ cartsy-dedupe train-model \
   --target-precision 0.97 \
   --max-positive-pairs 10000 \
   --max-hard-negative-pairs 30000 \
-  --use-openai-embeddings
+  --use-embeddings
 ```
 
 Synthetic augmentation creates two high-value patterns from the experiment:

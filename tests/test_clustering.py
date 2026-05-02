@@ -69,16 +69,3 @@ def test_cluster_guard_blocks_incompatible_sizes_even_if_edge_says_merge() -> No
     assert all(int(cluster["num_offers"]) == 1 for cluster in clusters.values())
     assert stats["merge_edges_blocked_by_cluster_guard"] == 1
 
-
-def test_cluster_guard_uses_llm_variant_attributes() -> None:
-    products = [product("1"), product("2")]
-    products[0].extracted_attributes = {"product_line": "peptide lip treatment", "flavor": "salted caramel"}
-    products[1].extracted_attributes = {"product_line": "peptide lip treatment", "flavor": "watermelon slice"}
-    pairs = [
-        CandidatePair("1", "2", 0.92, "merge", "forced", ("x",), {}),
-    ]
-
-    clusters, stats = build_clusters(products, pairs, {"1": 0, "2": 1})
-
-    assert all(int(cluster["num_offers"]) == 1 for cluster in clusters.values())
-    assert stats["merge_edges_blocked_by_cluster_guard"] == 1

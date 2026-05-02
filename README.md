@@ -1,6 +1,6 @@
 # Cartsy Product Deduplication Pipeline
 
-Production-shaped product entity resolution for the Cartsy challenge. The current pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, computes a stable pairwise ML feature vector, adds dense OpenAI semantic similarity for every scored candidate pair, restores high-precision exact-evidence merges when no contradiction exists, and uses a trained logistic-regression model for borderline merge/no-merge decisions.
+Production-shaped product entity resolution for the Cartsy challenge. The current pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, computes a stable pairwise ML feature vector, adds dense semantic similarity for every scored candidate pair, restores high-precision exact-evidence merges when no contradiction exists, and uses a trained logistic-regression model for borderline merge/no-merge decisions.
 
 The canonical pipeline walkthrough is in `PIPELINE.md`.
 
@@ -15,7 +15,7 @@ cp .env.example .env
 docker compose up -d postgres
 ```
 
-Set `OPENAI_API_KEY` in `.env`. The pipeline requires OpenAI embeddings because `semantic_sim` is a dense feature for all scored candidate pairs.
+Choose an embedding backend in `.env`: `CARTSY_EMBEDDING_PROVIDER=openai` uses OpenAI and requires `OPENAI_API_KEY`; `CARTSY_EMBEDDING_PROVIDER=sentence-transformers` runs local sentence-transformers embeddings. Keep `CARTSY_EMBEDDING_DIMENSIONS` aligned with the model because pgvector columns have fixed width.
 
 ## Train The Logistic Model
 
@@ -29,7 +29,7 @@ Train from the augmented experiment dataset. The large augmented CSVs are local 
   --target-precision 0.97 \
   --max-positive-pairs 10000 \
   --max-hard-negative-pairs 30000 \
-  --use-openai-embeddings
+  --use-embeddings
 ```
 
 To regenerate an augmented dataset from base labels, use `cartsy-dedupe augment-training-data`; the pipeline runbook in `PIPELINE.md` describes the positive and hard-negative patterns.
@@ -76,7 +76,7 @@ near_miss_pairs.csv
 summary_report.json
 ```
 
-`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, OpenAI usage/cost estimates, and a `stage_caches.stage_caching.enabled=0` marker. Stage caching is deliberately disabled while the exact-plus-ML scorer is being calibrated; product embedding caching remains available to avoid repeated OpenAI calls for unchanged product text.
+`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, embedding usage/cost estimates when using OpenAI, and a `stage_caches.stage_caching.enabled=0` marker. Stage caching is deliberately disabled while the exact-plus-ML scorer is being calibrated; product embedding caching remains available to avoid recomputing unchanged product text embeddings.
 
 ## Query Completed Runs
 

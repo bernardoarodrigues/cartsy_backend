@@ -116,6 +116,7 @@ def retrieval_layer_cache_key(
 def embedding_cache_key(
     *,
     normalization_key: str,
+    embedding_provider: str = "openai",
     embedding_model: str,
     embedding_dimensions: int,
     code: dict[str, str],
@@ -125,6 +126,7 @@ def embedding_cache_key(
             "cache_schema_version": CACHE_SCHEMA_VERSION,
             "stage": "product_embeddings",
             "normalization_key": normalization_key,
+            "embedding_provider": embedding_provider,
             "embedding_model": embedding_model,
             "embedding_dimensions": embedding_dimensions,
             "code": code,
@@ -280,7 +282,7 @@ def cached_product_from_record(record: dict[str, Any]) -> NormalizedProduct:
     payload["model_tokens"] = tuple(payload.get("model_tokens") or [])
     payload["quality_flags"] = tuple(payload.get("quality_flags") or [])
     payload["identifiers"] = dict(payload.get("identifiers") or {})
-    payload["extracted_attributes"] = dict(payload.get("extracted_attributes") or {})
+    payload.pop("extracted_attributes", None)
     return NormalizedProduct(**payload)
 
 

@@ -11,25 +11,21 @@ from typing import Any
 import numpy as np
 from dotenv import load_dotenv
 
+from cartsy_dedupe.embeddings import EmbeddingProvider, configured_embedding_model, embedding_provider_name
 from cartsy_dedupe.utils.pipeline_cache import (
     embedding_cache_dir,
     normalization_cache_dir,
     read_normalization_cache,
 )
-from cartsy_dedupe.utils.pipeline_helpers import embedding_text, ensure_openai_api_key
+from cartsy_dedupe.utils.pipeline_helpers import embedding_text
 from cartsy_dedupe.utils.pipeline_metrics import RunMetrics
-
-try:  # pragma: no cover - import failure depends on local env setup.
-    from openai import OpenAI
-except ImportError:  # pragma: no cover
-    OpenAI = None
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m cartsy_dedupe.embed_cache",
         description=(
-            "Generate OpenAI embeddings from the newest normalized cache file and "
+            "Generate embeddings from the newest normalized cache file and "
             "save them for deterministic test use."
         ),
     )
@@ -50,12 +46,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--batch-size",
         type=int,
         default=int(os.getenv("CARTSY_EMBEDDING_BATCH_SIZE", "128")),
-        help="OpenAI embedding request batch size.",
+        help="Embedding request batch size.",
     )
     parser.add_argument(
         "--embedding-model",
-        default=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-        help="Embedding model passed to OpenAI.",
+        default=None,
+        help="Embedding model. Defaults depend on CARTSY_EMBEDDING_PROVIDER.",
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        choices=["openai", "sentence-transformers"],
+        default=None,
+        help="Embedding backend. Default: CARTSY_EMBEDDING_PROVIDER or openai.",
     )
     parser.add_argument(
         "--dtype",
@@ -98,9 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     load_dotenv(dotenv_path=Path.cwd() / ".env")
-    if OpenAI is None:
-        raise RuntimeError("Install openai before generating embeddings.")
-    ensure_openai_api_key()
+    embedding_provider = args.embedding_provider or embedding_provider_name()
+    embedding_model = configured_embedding_model(embedding_provider, args.embedding_model)
 
     normalization_seed = Path(args.normalization_dir) if args.normalization_dir else normalization_cache_dir()
     normalization_dir = resolve_normalization_dir(normalization_seed)
@@ -124,15 +125,16 @@ def main(argv: list[str] | None = None) -> int:
         for product in products
     ]
 
-    client = OpenAI()
+    embedder = EmbeddingProvider(provider=embedding_provider, model=embedding_model)
     embedding_rows: list[list[float]] = []
     metrics = RunMetrics()
     started = perf_counter()
     batches = batched(texts, args.batch_size)
     for index, batch in enumerate(batches, start=1):
-        response = client.embeddings.create(model=args.embedding_model, input=batch)
-        metrics.add_usage(args.embedding_model, getattr(response, "usage", None))
-        embedding_rows.extend([item.embedding for item in response.data])
+        result = embedder.embed_texts(batch)
+        if result.usage is not None:
+            metrics.add_usage(embedding_model, result.usage)
+        embedding_rows.extend(result.embeddings)
         print(f"embedded batch {index}/{len(batches)} ({len(embedding_rows):,} products)")
 
     output_dir = Path(args.output_dir) if args.output_dir is not None else embedding_cache_dir()
@@ -156,8 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     elapsed_seconds = perf_counter() - started
     metrics_report = metrics.as_report(
-        embedding_model=args.embedding_model,
-        extraction_model="not_used",
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
         input_records=len(source_ids),
         total_elapsed_seconds=elapsed_seconds,
     )
@@ -180,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"normalization cache: {cache_file}")
     print(f"products embedded: {len(source_ids):,}")
-    print(f"embedding model: {args.embedding_model}")
+    print(f"embedding provider: {embedding_provider}")
+    print(f"embedding model: {embedding_model}")
     print(f"embedding matrix: {matrix_path}")
     print(f"source ids: {source_ids_path}")
     print(f"source id index: {source_id_to_index_path}")

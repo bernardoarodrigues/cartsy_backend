@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -86,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--run", required=True, help="Run output directory.")
     index.add_argument("--run-id", default=None, help="Stable run ID for indexed artifacts. Defaults to run directory name.")
     index.add_argument("--batch-size", type=int, default=128, help="Embedding batch size.")
-    index.add_argument("--no-embeddings", action="store_true", help="Index lexical metadata only, without OpenAI embeddings.")
+    index.add_argument("--no-embeddings", action="store_true", help="Index lexical metadata only, without embeddings.")
 
     artifact_search = subparsers.add_parser("search-artifacts", help="Semantic search across indexed groups, offers, pairs, and summaries.")
     artifact_search.add_argument("query", help="Search text.")
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = subparsers.add_parser("serve", help="Run the REST API over completed run artifacts.")
     serve.add_argument("--runs-root", default="outputs", help="Directory containing run_* output folders.")
+    serve.add_argument("--models-root", default="models", help="Directory containing trained model artifacts.")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--reload", action="store_true")
@@ -121,8 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--random-state", type=int, default=42)
     train.add_argument("--max-positive-pairs", type=int, default=50_000)
     train.add_argument("--max-hard-negative-pairs", type=int, default=150_000)
-    train.add_argument("--use-openai-embeddings", action="store_true", help="Compute dense semantic_sim using OpenAI embeddings during training.")
-    train.add_argument("--embedding-model", default=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
+    train.add_argument("--use-embeddings", action="store_true", help="Compute dense semantic_sim embeddings during training.")
+    train.add_argument(
+        "--embedding-provider",
+        choices=["openai", "sentence-transformers"],
+        default=None,
+        help="Embedding backend. Default: CARTSY_EMBEDDING_PROVIDER or openai.",
+    )
+    train.add_argument("--embedding-model", default=None)
 
     return parser
 
@@ -225,11 +233,18 @@ def main(argv: list[str] | None = None) -> int:
             print("error: install FastAPI dependencies with `pip install -r requirements.txt`", file=sys.stderr)
             return 1
         os.environ["CARTSY_RUNS_ROOT"] = args.runs_root
-        app = "cartsy_dedupe.api:create_app" if args.reload else create_app(runs_root=args.runs_root)
+        os.environ["CARTSY_MODELS_ROOT"] = args.models_root
+        app = "cartsy_dedupe.api:create_app" if args.reload else create_app(runs_root=args.runs_root, models_root=args.models_root)
         uvicorn.run(app, host=args.host, port=args.port, reload=args.reload, factory=args.reload)
         return 0
 
     if args.command == "augment-training-data":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(levelname)s %(name)s: %(message)s",
+            stream=sys.stderr,
+            force=True,
+        )
         try:
             report = augment_training_data(
                 input_path=args.input,
@@ -250,6 +265,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "train-model":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(levelname)s %(name)s: %(message)s",
+            stream=sys.stderr,
+            force=True,
+        )
         try:
             report = train_logistic_regression(
                 products_path=args.products,
@@ -259,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
                 random_state=args.random_state,
                 max_positive_pairs=args.max_positive_pairs,
                 max_hard_negative_pairs=args.max_hard_negative_pairs,
-                use_openai_embeddings=args.use_openai_embeddings,
+                use_embeddings=args.use_embeddings,
+                embedding_provider=args.embedding_provider,
                 embedding_model=args.embedding_model,
             )
         except (RuntimeError, ValueError) as exc:

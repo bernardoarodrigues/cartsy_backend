@@ -2,24 +2,28 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import random
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
+from math import comb
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tqdm import tqdm
 from dotenv import load_dotenv
 
+from cartsy_dedupe.embeddings import EmbeddingProvider, configured_embedding_model, embedding_provider_name
 from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, feature_vector, hard_contradiction_features
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.schemas import NormalizedProduct
 from cartsy_dedupe.scoring import score_pair, string_similarity
-from cartsy_dedupe.utils.pipeline_helpers import embedding_text, ensure_openai_api_key
+from cartsy_dedupe.utils.pipeline_helpers import embedding_text
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
 
 PRODUCT_COLUMNS = [
@@ -42,6 +46,8 @@ TRUTH_COLUMNS = ["source_id", "deduped_id"]
 SIZE_RE = re.compile(r"(?P<value>\d+(?:[,.]\d+)?)\s*(?P<unit>ml|l|g|kg|unidades|unidade|pcs|pecas|peças|oz)\b", re.I)
 PACK_RE = re.compile(r"\b(?:pacote\s+de|pack\s+of|kit\s+com|com)\s*(?P<count>\d+)\b|\b(?P<count2>\d+)\s*(?:unidades|unidade|pcs|pecas|peças)\b", re.I)
 SHADE_WORDS = ["Preto", "Branco", "Azul", "Rosa", "Prata", "Dourado", "Nude", "Claro", "Escuro", "Natural"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,7 @@ def augment_training_data(
     seed: int = 7,
 ) -> dict[str, object]:
     rng = random.Random(seed)
+    logger.info("Augment training data: loading input %s and ground truth %s", input_path, ground_truth_path)
     products = load_rows(input_path)
     truth_rows = load_rows(ground_truth_path)
     truth_by_source = {row["source_id"]: row["deduped_id"] for row in truth_rows}
@@ -74,6 +81,13 @@ def augment_training_data(
         raise ValueError("No product rows matched the ground-truth source_id values.")
 
     hard_negative_samples = max(0, duplicate_samples // 5) if hard_negative_samples is None else max(0, hard_negative_samples)
+    logger.info(
+        "Augment: %d product rows, %d truth rows; generating %d duplicate variants and %d hard negatives",
+        len(products),
+        len(truth_rows),
+        duplicate_samples,
+        hard_negative_samples,
+    )
     source_id = next_available_id(start_source_id, {row.get("id", row.get("source_id", "")) for row in products})
     deduped_id = next_available_id(start_deduped_id, {row.get("deduped_id", "") for row in truth_rows})
 
@@ -91,7 +105,10 @@ def augment_training_data(
         mutate_brand_case,
     ]
 
-    for index in range(duplicate_samples):
+    dup_iter = range(duplicate_samples)
+    if duplicate_samples >= 200:
+        dup_iter = tqdm(dup_iter, desc="Augment positives", unit="row")
+    for index in dup_iter:
         base = base_pool[index % len(base_pool)]
         row = None
         detail = ""
@@ -124,7 +141,10 @@ def augment_training_data(
         )
         source_id += 1
 
-    for index in range(hard_negative_samples):
+    hn_iter = range(hard_negative_samples)
+    if hard_negative_samples >= 200:
+        hn_iter = tqdm(hn_iter, desc="Augment hard negatives", unit="row")
+    for index in hn_iter:
         base = base_pool[(duplicate_samples + index) % len(base_pool)]
         row = copy_product_row(base, source_id)
         make_weak_shared_sku(row)
@@ -148,6 +168,7 @@ def augment_training_data(
 
     all_products = products + new_products
     all_truth = truth_rows + new_truth
+    logger.info("Writing augmented CSVs (%d products, %d truth rows)", len(all_products), len(all_truth))
     write_csv(output_data_path, all_products, PRODUCT_COLUMNS)
     write_csv(output_ground_truth_path, all_truth, TRUTH_COLUMNS)
     write_csv(output_manifest_path, manifest, ["source_id", "deduped_id", "base_source_id", "label_type", "augmentation", "detail"])
@@ -176,8 +197,9 @@ def train_logistic_regression(
     random_state: int = 42,
     max_positive_pairs: int = 50_000,
     max_hard_negative_pairs: int = 150_000,
-    use_openai_embeddings: bool = False,
-    embedding_model: str = "text-embedding-3-small",
+    use_embeddings: bool = False,
+    embedding_provider: str | None = None,
+    embedding_model: str | None = None,
 ) -> dict[str, object]:
     load_dotenv(dotenv_path=Path.cwd() / ".env")
     from joblib import dump
@@ -188,13 +210,27 @@ def train_logistic_regression(
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    logger.info("Train model: output directory %s", output_path)
+    logger.info("Loading products from %s", products_path)
     raw_rows = load_rows(products_path)
     truth_by_source = read_truth(ground_truth_path)
     products = [normalize_row(row) for row in raw_rows if (row.get("id") or row.get("source_id")) in truth_by_source]
+    logger.info(
+        "Loaded %d CSV rows, %d products with labels from ground truth %s",
+        len(raw_rows),
+        len(products),
+        ground_truth_path,
+    )
     if len(products) < 2:
         raise ValueError("Training requires at least two labeled products.")
     source_ids = [product.source_id for product in products]
     labels_by_index = {index: truth_by_source[source_id] for index, source_id in enumerate(source_ids)}
+    logger.info(
+        "Building training pairs (max_positive=%s, max_hard_negative=%s, random_state=%s)",
+        f"{max_positive_pairs:,}",
+        f"{max_hard_negative_pairs:,}",
+        random_state,
+    )
     pair_examples = build_training_pairs(
         products,
         labels_by_index=labels_by_index,
@@ -202,29 +238,58 @@ def train_logistic_regression(
         max_hard_negative_pairs=max_hard_negative_pairs,
         random_state=random_state,
     )
+    pos_n = sum(1 for example in pair_examples if example.label == 1)
+    neg_n = len(pair_examples) - pos_n
+    logger.info("Built %d pair examples (positives=%d, negatives=%d)", len(pair_examples), pos_n, neg_n)
     if len({example.label for example in pair_examples}) < 2:
         raise ValueError("Training pairs need at least one positive and one negative label.")
 
-    semantic_by_pair = (
-        compute_training_semantic_similarities(products, pair_examples, output_path, embedding_model)
-        if use_openai_embeddings
-        else {}
-    )
+    resolved_embedding_provider = embedding_provider or embedding_provider_name()
+    resolved_embedding_model = configured_embedding_model(resolved_embedding_provider, embedding_model)
+    if use_embeddings:
+        logger.info(
+            "Computing %s embeddings for semantic features (model=%s)",
+            resolved_embedding_provider,
+            resolved_embedding_model,
+        )
+        semantic_by_pair = compute_training_semantic_similarities(
+            products,
+            pair_examples,
+            output_path,
+            resolved_embedding_provider,
+            resolved_embedding_model,
+        )
+    else:
+        logger.info("Skipping embeddings (lexical and structural features only)")
+        semantic_by_pair = {}
+    logger.info("Computing pair feature rows (%d pairs)", len(pair_examples))
     rows = pair_feature_rows(products, pair_examples, semantic_by_pair)
     x = np.array([[row[column] for column in DEFAULT_FEATURE_COLUMNS] for row in rows], dtype=float)
     y = np.array([int(row["label"]) for row in rows], dtype=int)
+    logger.info("Feature matrix shape %s (%d columns)", x.shape, len(DEFAULT_FEATURE_COLUMNS))
     indexes = np.arange(len(rows))
     train_idx, test_idx = train_test_split(indexes, test_size=0.30, random_state=random_state, stratify=y)
+    logger.info("Train/test split: %d train pairs, %d test pairs", len(train_idx), len(test_idx))
     model = LogisticRegression(max_iter=2_000, class_weight="balanced", random_state=random_state)
     scaler = StandardScaler()
     x_train = scaler.fit_transform(x[train_idx])
+    logger.info("Fitting logistic regression on %d training rows", len(train_idx))
     model.fit(x_train, y[train_idx])
+    logger.info("Scoring held-out test set and calibrating threshold (target_precision=%s)", target_precision)
     test_scores = model.predict_proba(scaler.transform(x[test_idx]))[:, 1]
     threshold_curve = build_threshold_curve(y[test_idx], test_scores)
     threshold = choose_threshold(threshold_curve, target_precision)
     test_pred = (test_scores >= threshold).astype(int)
     precision, recall, f1, _ = precision_recall_fscore_support(y[test_idx], test_pred, average="binary", zero_division=0)
     average_precision = average_precision_score(y[test_idx], test_scores) if len(set(y[test_idx])) > 1 else 0.0
+    logger.info(
+        "Test metrics: precision=%.4f recall=%.4f f1=%.4f AP=%.4f chosen_threshold=%.4f",
+        float(precision),
+        float(recall),
+        float(f1),
+        float(average_precision),
+        float(threshold),
+    )
 
     bundle = {
         "model_type": "logistic_regression",
@@ -234,12 +299,15 @@ def train_logistic_regression(
         "threshold": threshold,
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),
         "target_precision": target_precision,
-        "use_openai_embeddings": use_openai_embeddings,
-        "embedding_model": embedding_model,
+        "use_embeddings": use_embeddings,
+        "embedding_provider": resolved_embedding_provider,
+        "embedding_model": resolved_embedding_model,
     }
     model_path = output_path / "cartsy_logreg.joblib"
+    logger.info("Writing model bundle to %s", model_path)
     dump(bundle, model_path)
 
+    logger.info("Writing eval artifacts (curves, errors, risky clusters)")
     write_threshold_curve(output_path / "threshold_curve.csv", threshold_curve)
     write_feature_coefficients(output_path / "feature_coefficients.csv", model.coef_[0], DEFAULT_FEATURE_COLUMNS)
     write_error_examples(output_path / "false_positives.csv", rows, test_idx, y[test_idx], test_scores, test_pred, want_label=0, want_pred=1)
@@ -258,7 +326,9 @@ def train_logistic_regression(
         "test_precision": float(precision),
         "test_recall": float(recall),
         "test_f1": float(f1),
-        "use_openai_embeddings": use_openai_embeddings,
+        "use_embeddings": use_embeddings,
+        "embedding_provider": resolved_embedding_provider,
+        "embedding_model": resolved_embedding_model,
         "artifacts": [
             "threshold_curve.csv",
             "feature_coefficients.csv",
@@ -268,6 +338,7 @@ def train_logistic_regression(
         ],
     }
     (output_path / "metrics.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    logger.info("Training complete; metrics written to %s", output_path / "metrics.json")
     return report
 
 
@@ -289,7 +360,17 @@ def build_training_pairs(
         if len(indexes) < 2:
             continue
         rng.shuffle(indexes)
-        for left_index, right_index in combinations(indexes, 2):
+        pair_total = comb(len(indexes), 2)
+        combo_iter: Any = combinations(indexes, 2)
+        if pair_total > 1_000:
+            combo_iter = tqdm(
+                combo_iter,
+                total=pair_total,
+                desc=f"Positive pairs (cluster n={len(indexes)})",
+                leave=False,
+                unit="pair",
+            )
+        for left_index, right_index in combo_iter:
             if add_pair(pairs, products, labels_by_index, left_index, right_index, label=1):
                 positive_count += 1
             if positive_count >= max_positive_pairs:
@@ -303,7 +384,10 @@ def build_training_pairs(
         random_state=random_state,
     )
     hard_negative_candidates.sort(reverse=True)
-    for _, left_index, right_index in hard_negative_candidates[:max_hard_negative_pairs]:
+    hard_slice = hard_negative_candidates[:max_hard_negative_pairs]
+    if len(hard_slice) > 1_000:
+        hard_slice = tqdm(hard_slice, desc="Register hard-negative pairs", unit="pair")
+    for _, left_index, right_index in hard_slice:
         add_pair(pairs, products, labels_by_index, left_index, right_index, label=0)
     if not any(pair.label == 0 for pair in pairs.values()):
         random_negatives = random_negative_pairs(labels_by_index, max_pairs=max(1, max_positive_pairs), rng=rng)
@@ -322,7 +406,11 @@ def collect_hard_negative_candidates(
     rng = random.Random(random_state)
     candidates: dict[tuple[int, int], float] = {}
 
-    for bucket in identifier_buckets(products).values():
+    id_buckets = list(identifier_buckets(products).values())
+    id_bucket_iter: Any = id_buckets
+    if len(id_buckets) > 50:
+        id_bucket_iter = tqdm(id_buckets, desc="Identifier buckets (hard negatives)", unit="bucket")
+    for bucket in id_bucket_iter:
         add_bucket_negative_candidates(products, labels_by_index, bucket, candidates, max_bucket_pairs=2_000)
         if len(candidates) >= max_candidates:
             break
@@ -331,7 +419,11 @@ def collect_hard_negative_candidates(
     for index, product in enumerate(products):
         if product.brand_norm:
             brand_buckets[product.brand_norm].append(index)
-    for bucket in brand_buckets.values():
+    brand_vals = list(brand_buckets.values())
+    brand_iter: Any = brand_vals
+    if len(brand_vals) > 50:
+        brand_iter = tqdm(brand_vals, desc="Brand buckets (hard negatives)", unit="bucket")
+    for bucket in brand_iter:
         if len(bucket) < 2:
             continue
         ordered = sorted(bucket, key=lambda index: products[index].name_norm)
@@ -350,7 +442,11 @@ def collect_hard_negative_candidates(
             break
 
     if len(candidates) < max_candidates:
-        for left_index, right_index in random_negative_pairs(labels_by_index, max_pairs=max_candidates - len(candidates), rng=rng):
+        need = max_candidates - len(candidates)
+        rand_pairs = random_negative_pairs(labels_by_index, max_pairs=need, rng=rng)
+        if len(rand_pairs) > 1_000:
+            rand_pairs = tqdm(rand_pairs, desc="Random negative pair fill", unit="pair")
+        for left_index, right_index in rand_pairs:
             title_score = string_similarity(products[left_index].name_norm, products[right_index].name_norm)
             candidates[(left_index, right_index)] = max(candidates.get((left_index, right_index), 0.0), title_score)
 
@@ -441,7 +537,10 @@ def pair_feature_rows(
     semantic_by_pair: dict[tuple[int, int], float],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for example in pair_examples:
+    example_iter: Any = pair_examples
+    if len(pair_examples) > 500:
+        example_iter = tqdm(pair_examples, desc="Pair features", unit="pair")
+    for example in example_iter:
         pair_key = (example.left_index, example.right_index)
         left = products[example.left_index]
         right = products[example.right_index]
@@ -471,12 +570,10 @@ def compute_training_semantic_similarities(
     products: list[NormalizedProduct],
     pair_examples: list[PairExample],
     output_path: Path,
+    embedding_provider: str,
     embedding_model: str,
 ) -> dict[tuple[int, int], float]:
-    from openai import OpenAI
-
-    ensure_openai_api_key()
-    client = OpenAI()
+    embedder = EmbeddingProvider(provider=embedding_provider, model=embedding_model)
     indexes = sorted({index for pair in pair_examples for index in (pair.left_index, pair.right_index)})
     texts = [
         embedding_text(
@@ -490,20 +587,35 @@ def compute_training_semantic_similarities(
         for index in indexes
     ]
     embeddings: dict[int, list[float]] = {}
-    for offset in range(0, len(indexes), 128):
+    batch_offsets = range(0, len(indexes), 128)
+    if len(indexes) > 128:
+        batch_offsets = tqdm(batch_offsets, desc=f"{embedding_provider} embedding batches", unit="batch")
+    for offset in batch_offsets:
         batch_indexes = indexes[offset : offset + 128]
-        response = client.embeddings.create(model=embedding_model, input=texts[offset : offset + 128])
-        for index, item in zip(batch_indexes, response.data, strict=True):
-            embeddings[index] = item.embedding
+        result = embedder.embed_texts(texts[offset : offset + 128])
+        for index, embedding in zip(batch_indexes, result.embeddings, strict=True):
+            embeddings[index] = embedding
     (output_path / "training_embedding_products.json").write_text(
-        json.dumps({"embedding_model": embedding_model, "source_ids": [products[index].source_id for index in indexes]}, indent=2) + "\n",
+        json.dumps(
+            {
+                "embedding_provider": embedding_provider,
+                "embedding_model": embedding_model,
+                "source_ids": [products[index].source_id for index in indexes],
+            },
+            indent=2,
+        ) + "\n",
         encoding="utf-8",
     )
-    return {
-        (pair.left_index, pair.right_index): cosine(embeddings[pair.left_index], embeddings[pair.right_index])
-        for pair in pair_examples
-        if pair.left_index in embeddings and pair.right_index in embeddings
-    }
+    pair_iter: Any = pair_examples
+    if len(pair_examples) > 500:
+        pair_iter = tqdm(pair_examples, desc="Pair cosine similarity", unit="pair")
+    semantic: dict[tuple[int, int], float] = {}
+    for pair in pair_iter:
+        if pair.left_index in embeddings and pair.right_index in embeddings:
+            semantic[(pair.left_index, pair.right_index)] = cosine(
+                embeddings[pair.left_index], embeddings[pair.right_index]
+            )
+    return semantic
 
 
 def build_threshold_curve(y_true: np.ndarray, scores: np.ndarray) -> list[dict[str, float]]:

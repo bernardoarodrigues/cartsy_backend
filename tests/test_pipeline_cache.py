@@ -78,10 +78,10 @@ def test_candidate_pairs_round_trip() -> None:
     assert restored == candidate_pairs
 
 
-def test_product_signature_changes_with_attributes() -> None:
+def test_product_signature_changes_with_product_content() -> None:
     products = [product("1")]
     signature_before = product_signature(products)
-    products[0].extracted_attributes["color"] = "blue"
+    products[0].quality_flags = ("changed",)
 
     assert product_signature(products) != signature_before
 
