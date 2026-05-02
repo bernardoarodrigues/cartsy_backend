@@ -7,9 +7,7 @@ __pycache__/
 # Large/local inputs and generated artifacts
 data/
 models/
-outputs/run_*/
-outputs/latest
-outputs/smoke_*/
+outputs/
 
 # Keep small sample fixtures and sample deliverables commit-friendly.
 !data/products_first20.csv
