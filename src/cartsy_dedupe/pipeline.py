@@ -108,6 +108,19 @@ def cosine_similarity(left: Sequence[float] | None, right: Sequence[float] | Non
     return max(0.0, min(1.0, dot / ((left_norm**0.5) * (right_norm**0.5))))
 
 
+def coerce_embedding(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            stripped = stripped[1:-1]
+        if not stripped:
+            return []
+        return [float(part) for part in stripped.split(",") if part.strip()]
+    return [float(item) for item in value]
+
+
 def env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -357,7 +370,7 @@ class DedupePipeline:
                 (sorted(indexes),),
             )
             rows = cur.fetchall()
-        return {int(index): list(embedding) for index, embedding in rows}
+        return {int(index): coerce_embedding(embedding) for index, embedding in rows}
 
     def build_clusters(
         self,

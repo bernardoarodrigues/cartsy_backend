@@ -5,6 +5,7 @@ from pathlib import Path
 from cartsy_dedupe.pipeline import (
     DedupePipeline,
     RunMetrics,
+    coerce_embedding,
     cosine_similarity,
     embedding_text,
     extracted_attribute_score,
@@ -135,6 +136,11 @@ def test_cosine_similarity_handles_dense_semantic_feature() -> None:
     assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == 1.0
     assert cosine_similarity([1.0, 0.0], [0.0, 1.0]) == 0.0
     assert cosine_similarity(None, [0.0, 1.0]) == 0.0
+
+
+def test_coerce_embedding_handles_pgvector_string() -> None:
+    assert coerce_embedding("[0.1,0.2,0.3]") == [0.1, 0.2, 0.3]
+    assert coerce_embedding([0.1, 0.2]) == [0.1, 0.2]
 
 
 class _FixedModel:

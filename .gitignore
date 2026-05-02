@@ -10,6 +10,7 @@ data/dataset_v1_augmented.csv
 data/ground_truth_v1_augmented.csv
 outputs/run_*/
 outputs/latest
+outputs/smoke_*/
 
 # Keep small sample fixtures and sample deliverables commit-friendly.
 !data/products_first20.csv
