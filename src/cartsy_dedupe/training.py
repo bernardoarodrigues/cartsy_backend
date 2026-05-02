@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from dotenv import load_dotenv
 
 from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, feature_vector, hard_contradiction_features
 from cartsy_dedupe.ingest import load_rows
@@ -178,6 +179,7 @@ def train_logistic_regression(
     use_openai_embeddings: bool = False,
     embedding_model: str = "text-embedding-3-small",
 ) -> dict[str, object]:
+    load_dotenv(dotenv_path=Path.cwd() / ".env")
     from joblib import dump
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import average_precision_score, precision_recall_fscore_support
@@ -282,41 +284,121 @@ def build_training_pairs(
     for index, label in labels_by_index.items():
         by_label[label].append(index)
     pairs: dict[tuple[int, int], PairExample] = {}
+    positive_count = 0
     for indexes in by_label.values():
+        if len(indexes) < 2:
+            continue
+        rng.shuffle(indexes)
         for left_index, right_index in combinations(indexes, 2):
-            add_pair(pairs, products, labels_by_index, left_index, right_index, label=1)
-            if len([pair for pair in pairs.values() if pair.label == 1]) >= max_positive_pairs:
+            if add_pair(pairs, products, labels_by_index, left_index, right_index, label=1):
+                positive_count += 1
+            if positive_count >= max_positive_pairs:
                 break
-    hard_negative_candidates: list[tuple[float, int, int]] = []
-    for left_index, left in enumerate(products):
-        for right_index in range(left_index + 1, len(products)):
-            if labels_by_index[left_index] == labels_by_index[right_index]:
-                continue
-            right = products[right_index]
-            block_keys = infer_block_keys(left, right)
-            retrieval = postgres_retrieval_features(block_keys)
-            score = max(
-                retrieval["exact"],
-                retrieval["lexical"],
-                retrieval["trigram"],
-                string_similarity(left.name_norm, right.name_norm),
-            )
-            if score >= 0.55 or (left.brand_norm and left.brand_norm == right.brand_norm and block_keys):
-                hard_negative_candidates.append((score, left_index, right_index))
+        if positive_count >= max_positive_pairs:
+            break
+    hard_negative_candidates = collect_hard_negative_candidates(
+        products,
+        labels_by_index=labels_by_index,
+        max_candidates=max_hard_negative_pairs * 4,
+        random_state=random_state,
+    )
     hard_negative_candidates.sort(reverse=True)
     for _, left_index, right_index in hard_negative_candidates[:max_hard_negative_pairs]:
         add_pair(pairs, products, labels_by_index, left_index, right_index, label=0)
     if not any(pair.label == 0 for pair in pairs.values()):
-        all_negative = [
-            (left_index, right_index)
-            for left_index in range(len(products))
-            for right_index in range(left_index + 1, len(products))
-            if labels_by_index[left_index] != labels_by_index[right_index]
-        ]
-        rng.shuffle(all_negative)
-        for left_index, right_index in all_negative[: max(1, min(len(all_negative), max_positive_pairs))]:
+        random_negatives = random_negative_pairs(labels_by_index, max_pairs=max(1, max_positive_pairs), rng=rng)
+        for left_index, right_index in random_negatives:
             add_pair(pairs, products, labels_by_index, left_index, right_index, label=0)
     return list(pairs.values())
+
+
+def collect_hard_negative_candidates(
+    products: list[NormalizedProduct],
+    *,
+    labels_by_index: dict[int, str],
+    max_candidates: int,
+    random_state: int,
+) -> list[tuple[float, int, int]]:
+    rng = random.Random(random_state)
+    candidates: dict[tuple[int, int], float] = {}
+
+    for bucket in identifier_buckets(products).values():
+        add_bucket_negative_candidates(products, labels_by_index, bucket, candidates, max_bucket_pairs=2_000)
+        if len(candidates) >= max_candidates:
+            break
+
+    brand_buckets: dict[str, list[int]] = defaultdict(list)
+    for index, product in enumerate(products):
+        if product.brand_norm:
+            brand_buckets[product.brand_norm].append(index)
+    for bucket in brand_buckets.values():
+        if len(bucket) < 2:
+            continue
+        ordered = sorted(bucket, key=lambda index: products[index].name_norm)
+        for position, left_index in enumerate(ordered):
+            window = ordered[position + 1 : position + 31]
+            for right_index in window:
+                if labels_by_index[left_index] == labels_by_index[right_index]:
+                    continue
+                title_score = string_similarity(products[left_index].name_norm, products[right_index].name_norm)
+                if title_score >= 0.55:
+                    pair_key = (min(left_index, right_index), max(left_index, right_index))
+                    candidates[pair_key] = max(candidates.get(pair_key, 0.0), title_score)
+            if len(candidates) >= max_candidates:
+                break
+        if len(candidates) >= max_candidates:
+            break
+
+    if len(candidates) < max_candidates:
+        for left_index, right_index in random_negative_pairs(labels_by_index, max_pairs=max_candidates - len(candidates), rng=rng):
+            title_score = string_similarity(products[left_index].name_norm, products[right_index].name_norm)
+            candidates[(left_index, right_index)] = max(candidates.get((left_index, right_index), 0.0), title_score)
+
+    return [(score, left_index, right_index) for (left_index, right_index), score in candidates.items()]
+
+
+def identifier_buckets(products: list[NormalizedProduct]) -> dict[tuple[str, str], list[int]]:
+    buckets: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for index, product in enumerate(products):
+        for key, value in product.identifiers.items():
+            if value and key in {"ean", "gtin", "upc", "asin", "sku"}:
+                buckets[(key, value)].append(index)
+    return buckets
+
+
+def add_bucket_negative_candidates(
+    products: list[NormalizedProduct],
+    labels_by_index: dict[int, str],
+    bucket: list[int],
+    candidates: dict[tuple[int, int], float],
+    *,
+    max_bucket_pairs: int,
+) -> None:
+    pair_count = 0
+    for left_pos, left_index in enumerate(bucket):
+        for right_index in bucket[left_pos + 1 :]:
+            if labels_by_index[left_index] == labels_by_index[right_index]:
+                continue
+            pair_key = (min(left_index, right_index), max(left_index, right_index))
+            score = max(1.0, string_similarity(products[left_index].name_norm, products[right_index].name_norm))
+            candidates[pair_key] = max(candidates.get(pair_key, 0.0), score)
+            pair_count += 1
+            if pair_count >= max_bucket_pairs:
+                return
+
+
+def random_negative_pairs(labels_by_index: dict[int, str], *, max_pairs: int, rng: random.Random) -> list[tuple[int, int]]:
+    indexes = list(labels_by_index)
+    pairs: set[tuple[int, int]] = set()
+    attempts = 0
+    max_attempts = max_pairs * 50
+    while len(pairs) < max_pairs and attempts < max_attempts and len(indexes) >= 2:
+        attempts += 1
+        left_index, right_index = rng.sample(indexes, 2)
+        if labels_by_index[left_index] == labels_by_index[right_index]:
+            continue
+        pairs.add((min(left_index, right_index), max(left_index, right_index)))
+    return list(pairs)
 
 
 def add_pair(
@@ -327,12 +409,13 @@ def add_pair(
     right_index: int,
     *,
     label: int | None = None,
-) -> None:
+) -> bool:
     pair_key = (min(left_index, right_index), max(left_index, right_index))
     if pair_key in pairs:
-        return
+        return False
     inferred_label = int(labels_by_index[pair_key[0]] == labels_by_index[pair_key[1]]) if label is None else label
     pairs[pair_key] = PairExample(pair_key[0], pair_key[1], inferred_label, infer_block_keys(products[pair_key[0]], products[pair_key[1]]))
+    return True
 
 
 def infer_block_keys(left: NormalizedProduct, right: NormalizedProduct) -> set[str]:

@@ -19,24 +19,20 @@ Set `OPENAI_API_KEY` in `.env`. The pipeline requires OpenAI embeddings because 
 
 ## Train The Logistic Model
 
-Start from labeled products and ground truth. The paths below use the sibling experiment checkout as the source data; replace them with any CSVs that follow the same product and `source_id,deduped_id` schema.
+Train from the augmented experiment dataset. The large augmented CSVs are local inputs and are intentionally ignored by git; the copies currently used here match `/Users/bernardorodrigues/Documents/Code/cartsy/data/dataset_v1_augmented.csv` and `/Users/bernardorodrigues/Documents/Code/cartsy/data/ground_truth_v1_augmented.csv`.
 
 ```bash
-.venv/bin/cartsy-dedupe augment-training-data \
-  --input /Users/bernardorodrigues/Documents/Code/cartsy/data/dataset_v1.csv \
-  --ground-truth /Users/bernardorodrigues/Documents/Code/cartsy/data/ground_truth_v1.csv \
-  --output-data data/dataset_v1_augmented.csv \
-  --output-ground-truth data/ground_truth_v1_augmented.csv \
-  --output-manifest data/augmentation_manifest.csv \
-  --duplicate-samples 1000 \
-  --hard-negative-samples 300
-
 .venv/bin/cartsy-dedupe train-model \
   --products data/dataset_v1_augmented.csv \
   --ground-truth data/ground_truth_v1_augmented.csv \
   --output-dir models \
+  --target-precision 0.97 \
+  --max-positive-pairs 10000 \
+  --max-hard-negative-pairs 30000 \
   --use-openai-embeddings
 ```
+
+To regenerate an augmented dataset from base labels, use `cartsy-dedupe augment-training-data`; the pipeline runbook in `PIPELINE.md` describes the positive and hard-negative patterns.
 
 Training writes:
 

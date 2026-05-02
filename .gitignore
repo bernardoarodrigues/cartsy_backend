@@ -6,6 +6,8 @@ __pycache__/
 
 # Large/local inputs and generated pipeline artifacts.
 data/products.csv
+data/dataset_v1_augmented.csv
+data/ground_truth_v1_augmented.csv
 outputs/run_*/
 outputs/latest
 

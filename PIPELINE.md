@@ -94,17 +94,25 @@ Trade-off: the model scores pairs, while clustering handles group construction. 
 
 ## 7. Training And Evaluation
 
-Training is handled by:
+Training should use the augmented dataset from the experiment checkout when available:
 
 ```bash
-cartsy-dedupe augment-training-data ...
-cartsy-dedupe train-model ...
+cartsy-dedupe train-model \
+  --products data/dataset_v1_augmented.csv \
+  --ground-truth data/ground_truth_v1_augmented.csv \
+  --output-dir models \
+  --target-precision 0.97 \
+  --max-positive-pairs 10000 \
+  --max-hard-negative-pairs 30000 \
+  --use-openai-embeddings
 ```
 
 Synthetic augmentation creates two high-value patterns from the experiment:
 
 - guarded positive duplicates that preserve variant signatures
 - dirty-identifier hard negatives with shared weak identifiers and variant conflicts
+
+If the augmented CSVs need to be regenerated, `cartsy-dedupe augment-training-data` ports those same patterns into this repo.
 
 Every training run writes threshold curves, precision/recall/F1, false positives, false negatives, feature coefficients, and top risky predicted clusters. These artifacts are the calibration surface for changing thresholds or features.
 

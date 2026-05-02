@@ -1,0 +1,27 @@
+left_source_id,right_source_id,score,label,hard_contradiction,variant_conflict,size_conflict,pack_conflict,blocking_keys
+9245,504099,0.9950244103688572,1,1,0.0,0.0,1.0,exact:asin:b0cmjh3rj9|exact:ean:7898672495025|lexical:fts:0.7143|trigram:title:1.0000
+6672,500151,0.9949040160099322,1,1,0.0,0.0,1.0,exact:asin:b07zjyg7pl|exact:ean:7891033216017 7891033740314|lexical:fts:0.7143|trigram:title:1.0000
+5600,502657,0.9946862045386768,1,1,0.0,0.0,1.0,exact:asin:b08l9t7dbh|exact:ean:6012516859854|lexical:fts:0.7143|trigram:title:1.0000
+29107,501124,0.9931737927441602,1,1,0.0,0.0,1.0,exact:asin:b0f1hlbrbp|exact:ean:7791293051581|lexical:fts:0.7143|trigram:title:1.0000
+8913,504638,0.988641659454371,1,1,0.0,0.0,1.0,exact:asin:b0dl3jxwsz|exact:sku:b0dl3jxwsz|lexical:fts:0.7143|trigram:title:1.0000
+500291,504349,0.987895888839362,1,1,0.0,0.0,1.0,exact:asin:b079y478j9|exact:sku:b079y478j9|lexical:fts:0.7143|trigram:title:1.0000
+15009,501096,0.9876060920521863,1,1,0.0,0.0,1.0,exact:asin:b07d7jrjpq|exact:sku:b07d7jrjpq|lexical:fts:0.7143|trigram:title:1.0000
+500952,501096,0.9875843770124597,1,1,0.0,0.0,1.0,exact:asin:b07d7jrjpq|exact:sku:b07d7jrjpq|lexical:fts:0.7143|trigram:title:1.0000
+27419,500410,0.9872477309645772,1,1,0.0,0.0,1.0,exact:asin:b0fncf4k3l|exact:sku:b0fncf4k3l|lexical:fts:0.7143|trigram:title:1.0000
+31346,503203,0.9840022503460614,1,1,0.0,0.0,1.0,exact:asin:b077c3r94l|exact:ean:7899662600474|exact:sku:b077c3r94l|lexical:fts:0.7143|trigram:title:1.0000
+28492,502608,0.983671298112714,1,1,0.0,0.0,1.0,exact:asin:b0cn4s9lr7|exact:ean:7898746330009|exact:sku:b0cn4s9lr7|lexical:fts:0.7143|trigram:title:1.0000
+8026,502216,0.9831568011963733,1,1,0.0,0.0,1.0,exact:asin:b0bpzfm9kp|exact:ean:7891033498031|exact:sku:b0bpzfm9kp|lexical:fts:0.7143|trigram:title:1.0000
+7219,500858,0.9830206273820116,1,1,0.0,0.0,1.0,exact:asin:b093dsqgbv|exact:ean:7891033813315 7908865754171|exact:sku:b093dsqgbv|lexical:fts:0.7143|trigram:title:1.0000
+16374,500284,0.9824684625283472,1,1,0.0,0.0,1.0,exact:asin:b0dxrggblz|exact:ean:7891356125751|exact:sku:b0dxrggblz|lexical:fts:0.7143|trigram:title:1.0000
+6245,501985,0.9812430034526365,1,1,0.0,0.0,1.0,exact:asin:b0drlcr1g7|exact:ean:8411061093207|exact:sku:b0drlcr1g7|lexical:fts:0.7143|trigram:title:1.0000
+5735,501369,0.9804269422296967,1,1,0.0,0.0,1.0,exact:asin:b08vdl2s1y|exact:ean:7908240823973|exact:sku:b08vdl2s1y|lexical:fts:0.7143|trigram:title:1.0000
+501369,503845,0.9804240875185105,1,1,0.0,0.0,1.0,exact:asin:b08vdl2s1y|exact:ean:7908240823973|exact:sku:b08vdl2s1y|lexical:fts:0.7143|trigram:title:1.0000
+22267,502559,0.9803054756511378,1,1,0.0,0.0,1.0,exact:asin:b000e7ssgc|exact:ean:3349668111343|exact:sku:b000e7ssgc|lexical:fts:0.7143|trigram:title:1.0000
+5267,501404,0.9687909334504335,1,1,0.0,0.0,1.0,exact:asin:b0cv3cty3v|exact:ean:3614273852814|exact:sku:b0cv3cty3v|lexical:fts:0.7143|trigram:title:1.0000
+6426,12457,0.9489105702949886,0,1,0.0,0.0,1.0,lexical:fts:0.7143|trigram:title:1.0000
+161311,501974,0.9117996318446119,1,1,0.0,1.0,0.0,lexical:fts:0.7143|trigram:title:1.0000
+144146,500026,0.8910007868799543,1,1,0.0,1.0,0.0,lexical:fts:0.7143|trigram:title:1.0000
+500543,505234,0.890219640491213,0,1,0.0,0.0,1.0,exact:asin:b01cfl4hfa|exact:sku:b01cfl4hfa|lexical:fts:0.7143|trigram:title:1.0000
+180308,503978,0.8862293147465832,1,1,0.0,1.0,0.0,lexical:fts:0.7143|trigram:title:1.0000
+501024,503203,0.8679346878857367,1,1,0.0,0.0,1.0,exact:asin:b077c3r94l|exact:ean:7899662600474|exact:sku:b077c3r94l|lexical:fts:0.7143|trigram:title:1.0000
+23424,505381,0.8577474040207563,0,1,0.0,0.0,1.0,exact:asin:b0fvy98p1z|exact:sku:b0fvy98p1z|lexical:fts:0.7143|trigram:title:1.0000
