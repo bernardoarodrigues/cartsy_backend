@@ -97,4 +97,5 @@ def test_train_logistic_regression_writes_eval_artifacts(tmp_path: Path) -> None
     assert metrics["feature_columns"]
     assert "cv_folds" in metrics
     assert "cv_thresholds" in metrics
+    assert "threshold_selection_method" in metrics
     assert 0.0 < metrics["threshold"] < 1.0

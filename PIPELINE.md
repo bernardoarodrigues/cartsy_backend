@@ -132,7 +132,7 @@ cartsy-dedupe train-model \
 
 `--target-precision` is accepted for backward compatibility but no longer drives threshold selection.
 
-**Threshold selection** uses stratified k-fold cross-validation (default 5 folds). The median F1-maximising threshold across folds is chosen, making the decision boundary stable across data distributions rather than fitted to a single test fold. A separate held-out calibration split (≈15% of data) is used for `CalibratedClassifierCV` isotonic regression, which makes `P(merge)` values reliable probabilities rather than raw logit-derived scores on imbalanced data. For small datasets the function automatically falls back to a simpler 70/30 split.
+**Threshold selection** uses the same score scale that runtime uses. The trainer still records stratified k-fold raw logistic thresholds (default 5 folds) as diagnostics, but when isotonic calibration is available the saved merge threshold is selected from calibrated held-out probabilities. A separate held-out calibration split (≈15% of data) is used for `CalibratedClassifierCV`, which makes `P(merge)` values reliable probabilities rather than raw logit-derived scores on imbalanced data. For small datasets the function automatically falls back to a simpler 70/30 split.
 
 Synthetic augmentation creates two high-value patterns:
 
@@ -141,7 +141,7 @@ Synthetic augmentation creates two high-value patterns:
 
 If the augmented CSVs need to be regenerated, `cartsy-dedupe augment-training-data` ports those same patterns.
 
-Every training run writes threshold curves, precision/recall/F1, CV thresholds, false positives, false negatives, feature coefficients, and top risky predicted clusters. `metrics.json` includes `cv_folds`, `cv_thresholds`, and `calibrated` keys.
+Every training run writes threshold curves, precision/recall/F1, CV thresholds, false positives, false negatives, feature coefficients, and top risky predicted clusters. Calibrated runs also write `calibration_threshold_curve.csv`. `metrics.json` includes `threshold_selection_method`, `cv_folds`, `cv_thresholds`, and `calibrated` keys.
 
 When `DEFAULT_FEATURE_COLUMNS` changes, retrain the model — the runtime `load_ml_model` check validates that bundle feature columns match the current contract and rejects stale bundles.
 

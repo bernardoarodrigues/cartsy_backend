@@ -228,12 +228,12 @@ def train_logistic_regression(
     """Train, calibrate, and evaluate a logistic-regression pair scorer.
 
     Splits data into train (≈70%), calibration (≈15%), and test (≈15%) sets.
-    Threshold selection uses ``cv_folds``-fold stratified cross-validation on
-    the training set, picking the median F1-maximising threshold across folds.
-    After threshold selection the base model is calibrated on the held-out
-    calibration split using ``CalibratedClassifierCV(method='isotonic')``,
-    making ``P(merge)`` values reliable so that the threshold is meaningful
-    rather than artificially pushed toward extremes.
+    The base model is calibrated on the held-out calibration split using
+    ``CalibratedClassifierCV(method='isotonic')``, making ``P(merge)`` values
+    reliable rather than raw logit-derived scores.  When calibration is
+    available, the saved threshold is selected from those calibrated held-out
+    probabilities so runtime uses the same score scale that evaluation used.
+    Raw ``cv_folds`` thresholds are still recorded as diagnostics.
 
     For small datasets where the three-split or CV would fail, the function
     falls back to a simpler 70/30 split with a single F1-optimal threshold.
@@ -250,6 +250,10 @@ def train_logistic_regression(
     load_dotenv(dotenv_path=Path.cwd() / ".env")
     from joblib import dump
     from sklearn.calibration import CalibratedClassifierCV
+    try:
+        from sklearn.frozen import FrozenEstimator
+    except ImportError:  # scikit-learn<1.6
+        FrozenEstimator = None  # type: ignore[assignment]
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import average_precision_score, precision_recall_fscore_support
     from sklearn.model_selection import StratifiedKFold, train_test_split
@@ -364,6 +368,7 @@ def train_logistic_regression(
         logger.warning("Clamped cv_folds from %d to %d (small training class size)", cv_folds, effective_folds)
 
     cv_thresholds: list[float] = []
+    threshold_selection_method = "uncalibrated_test_f1_fallback"
     if train_pos >= effective_folds and train_neg >= effective_folds:
         cv = StratifiedKFold(n_splits=effective_folds, shuffle=True, random_state=random_state)
         for fold_train_local, fold_val_local in cv.split(x_train_scaled, y[train_idx]):
@@ -374,6 +379,7 @@ def train_logistic_regression(
             best = max(curve, key=lambda r: r["f1"])
             cv_thresholds.append(float(best["threshold"]))
         threshold = float(np.median(cv_thresholds))
+        threshold_selection_method = "uncalibrated_cv_median_f1"
         logger.info("CV threshold selection (%d folds): thresholds=%s median=%.4f", effective_folds, cv_thresholds, threshold)
     else:
         # Too few samples for reliable CV — use F1-optimal on test set as fallback.
@@ -390,11 +396,23 @@ def train_logistic_regression(
     can_calibrate = len(cal_idx) >= 4 and int((y[cal_idx] == 1).sum()) >= 1 and int((y[cal_idx] == 0).sum()) >= 1
     if can_calibrate:
         logger.info("Calibrating model on %d held-out calibration samples", len(cal_idx))
-        model = CalibratedClassifierCV(base_model, cv="prefit", method="isotonic")
-        model.fit(scaler.transform(x[cal_idx]), y[cal_idx])
+        cal_x = scaler.transform(x[cal_idx])
+        cal_y = y[cal_idx]
+        # sklearn>=1.6 dropped cv="prefit" in favor of FrozenEstimator + cv=None.
+        if FrozenEstimator is not None:
+            model = CalibratedClassifierCV(estimator=FrozenEstimator(base_model), cv=None, method="isotonic")
+        else:
+            model = CalibratedClassifierCV(base_model, cv="prefit", method="isotonic")
+        model.fit(cal_x, cal_y)
+        cal_scores = model.predict_proba(cal_x)[:, 1]
+        calibration_threshold_curve = build_threshold_curve(cal_y, cal_scores)
+        threshold = float(max(calibration_threshold_curve, key=lambda r: r["f1"])["threshold"])
+        threshold_selection_method = "calibrated_holdout_f1"
+        logger.info("Calibrated threshold selection: threshold=%.4f", threshold)
     else:
         logger.info("Skipping calibration (calibration set too small or absent)")
         model = base_model  # type: ignore[assignment]
+        calibration_threshold_curve = []
 
     # ── Evaluation on test set ─────────────────────────────────────────────────
     logger.info("Evaluating on test set (%d pairs, threshold=%.4f)", len(test_idx), threshold)
@@ -432,6 +450,8 @@ def train_logistic_regression(
 
     logger.info("Writing eval artifacts (curves, errors, risky clusters)")
     write_threshold_curve(output_path / "threshold_curve.csv", threshold_curve)
+    if calibration_threshold_curve:
+        write_threshold_curve(output_path / "calibration_threshold_curve.csv", calibration_threshold_curve)
     write_feature_coefficients(output_path / "feature_coefficients.csv", base_model.coef_[0], DEFAULT_FEATURE_COLUMNS)
     write_error_examples(output_path / "false_positives.csv", rows, test_idx, y[test_idx], test_scores, test_pred, want_label=0, want_pred=1)
     write_error_examples(output_path / "false_negatives.csv", rows, test_idx, y[test_idx], test_scores, test_pred, want_label=1, want_pred=0)
@@ -441,6 +461,7 @@ def train_logistic_regression(
         "feature_columns": DEFAULT_FEATURE_COLUMNS,
         "threshold": threshold,
         "target_precision": target_precision,
+        "threshold_selection_method": threshold_selection_method,
         "cv_folds": effective_folds,
         "cv_thresholds": cv_thresholds,
         "calibrated": can_calibrate,
@@ -458,6 +479,7 @@ def train_logistic_regression(
         "embedding_model": resolved_embedding_model,
         "artifacts": [
             "threshold_curve.csv",
+            *([] if not calibration_threshold_curve else ["calibration_threshold_curve.csv"]),
             "feature_coefficients.csv",
             "false_positives.csv",
             "false_negatives.csv",

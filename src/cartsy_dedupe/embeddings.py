@@ -64,6 +64,7 @@ class EmbeddingProvider:
     def __init__(self, *, provider: str | None = None, model: str | None = None) -> None:
         self.provider = provider or embedding_provider_name()
         self.model = configured_embedding_model(self.provider, model)
+        self._sentence_transformer_model: Any | None = None
 
     def embed_texts(self, texts: list[str]) -> EmbeddingResult:
         if not texts:
@@ -84,15 +85,20 @@ class EmbeddingProvider:
         return EmbeddingResult([list(item.embedding) for item in response.data], getattr(response, "usage", None))
 
     def _embed_sentence_transformers(self, texts: list[str]) -> EmbeddingResult:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:  # pragma: no cover - optional dependency.
-            raise RuntimeError(
-                "Install sentence-transformers before using CARTSY_EMBEDDING_PROVIDER=sentence-transformers."
-            ) from exc
-        model = SentenceTransformer(self.model)
+        model = self._get_sentence_transformer_model()
         vectors = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return EmbeddingResult([[float(value) for value in vector] for vector in vectors])
+
+    def _get_sentence_transformer_model(self) -> Any:
+        if self._sentence_transformer_model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:  # pragma: no cover - optional dependency.
+                raise RuntimeError(
+                    "Install sentence-transformers before using CARTSY_EMBEDDING_PROVIDER=sentence-transformers."
+                ) from exc
+            self._sentence_transformer_model = SentenceTransformer(self.model)
+        return self._sentence_transformer_model
 
 
 def sentence_transformer_dimensions(model_name: str) -> int:
