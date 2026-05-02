@@ -22,29 +22,8 @@ from cartsy_dedupe.attributes import sizes_equivalent
 from cartsy_dedupe.config import GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
 from cartsy_dedupe.schemas import NormalizedProduct
 from cartsy_dedupe.scoring import MatchCertainty, RuleDecision
-from cartsy_dedupe.text import STOPWORDS, normalize_text
+from cartsy_dedupe.text import STOPWORDS, fuzz, normalize_text
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
-
-try:
-    from rapidfuzz import fuzz
-except ImportError:  # pragma: no cover - dependency is declared for normal installs.
-    import difflib
-
-    class _FallbackFuzz:
-        @staticmethod
-        def ratio(a: str, b: str) -> float:
-            return difflib.SequenceMatcher(None, a, b).ratio() * 100
-
-        @staticmethod
-        def token_set_ratio(a: str, b: str) -> float:
-            return difflib.SequenceMatcher(None, a, b).ratio() * 100
-
-        @staticmethod
-        def partial_ratio(a: str, b: str) -> float:
-            return difflib.SequenceMatcher(None, a, b).ratio() * 100
-
-    fuzz = _FallbackFuzz()
-
 
 DEFAULT_FEATURE_COLUMNS = [
     "same_retailer",
@@ -222,18 +201,6 @@ def exact_evidence_flags(block_keys: set[str]) -> dict[str, float]:
         "exact_key_count": exact_key_count,
         "exact_evidence_strength": strength,
     }
-
-
-def strong_exact_merge_reason(features: Mapping[str, float]) -> str:
-    if float(features.get("exact_global_id", 0.0)) > 0.0:
-        return "strong_exact:global_identifier"
-    if float(features.get("exact_asin", 0.0)) > 0.0:
-        return "strong_exact:asin"
-    if float(features.get("exact_retailer_sku", 0.0)) > 0.0:
-        return "strong_exact:retailer_sku"
-    if float(features.get("exact_canonical_url", 0.0)) > 0.0:
-        return "strong_exact:canonical_url"
-    return ""
 
 
 def feature_vector(features: Mapping[str, float], columns: list[str] | tuple[str, ...] = DEFAULT_FEATURE_COLUMNS) -> list[float]:

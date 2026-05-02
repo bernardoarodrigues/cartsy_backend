@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Iterable
 
 
 STOPWORDS = {
@@ -25,6 +24,27 @@ STOPWORDS = {
     "the",
     "with",
 }
+
+try:
+    from rapidfuzz import fuzz
+except ImportError:  # pragma: no cover - dependency is declared for normal installs.
+    import difflib
+
+    class _FallbackFuzz:
+        @staticmethod
+        def ratio(a: str, b: str) -> float:
+            return difflib.SequenceMatcher(None, a, b).ratio() * 100
+
+        @staticmethod
+        def token_set_ratio(a: str, b: str) -> float:
+            return difflib.SequenceMatcher(None, a, b).ratio() * 100
+
+        @staticmethod
+        def partial_ratio(a: str, b: str) -> float:
+            return difflib.SequenceMatcher(None, a, b).ratio() * 100
+
+    fuzz = _FallbackFuzz()
+
 
 def strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
@@ -87,7 +107,3 @@ def flatten_jsonish(value: object | None) -> str:
 def informative_tokens(text: str, limit: int = 5) -> tuple[str, ...]:
     tokens = [tok for tok in normalize_text(text).split() if len(tok) > 2 and tok not in STOPWORDS]
     return tuple(tokens[:limit])
-
-
-def stable_join(values: Iterable[str]) -> str:
-    return "|".join(sorted(value for value in values if value))

@@ -5,11 +5,12 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .embeddings import EmbeddingProvider, configured_embedding_dimensions
 from .query import make_query_embedding, register_pgvector
 from .text import normalize_text
+from .utils.pipeline_helpers import batched
 
 
 @dataclass(frozen=True)
@@ -442,7 +443,3 @@ def embedding_text_for_artifact(doc: ArtifactDocument) -> str:
         ]
     )
 
-
-def batched(items: list[ArtifactDocument], size: int) -> Iterable[list[ArtifactDocument]]:
-    for index in range(0, len(items), max(1, size)):
-        yield items[index : index + size]

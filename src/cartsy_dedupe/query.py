@@ -6,19 +6,7 @@ import os
 from pathlib import Path
 
 from .embeddings import EmbeddingProvider
-from .text import normalize_text
-
-try:
-    from rapidfuzz import fuzz
-except ImportError:  # pragma: no cover - dependency is installed in the project venv.
-    import difflib
-
-    class _FallbackFuzz:
-        @staticmethod
-        def token_set_ratio(a: str, b: str) -> float:
-            return difflib.SequenceMatcher(None, a, b).ratio() * 100
-
-    fuzz = _FallbackFuzz()
+from .text import fuzz, normalize_text
 
 
 def search_products(

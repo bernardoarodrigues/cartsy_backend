@@ -33,13 +33,12 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 
 from cartsy_dedupe.embeddings import EmbeddingProvider, configured_embedding_model, embedding_provider_name
-from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, feature_vector, hard_contradiction_features
+from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, hard_contradiction_features
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.schemas import NormalizedProduct
 from cartsy_dedupe.scoring import evaluate_rule, string_similarity
 from cartsy_dedupe.utils.pipeline_helpers import embedding_text
-from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
 
 PRODUCT_COLUMNS = [
     "id",
@@ -757,13 +756,6 @@ def build_threshold_curve(y_true: np.ndarray, scores: np.ndarray) -> list[dict[s
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
         rows.append({"threshold": float(threshold), "precision": precision, "recall": recall, "f1": f1, "tp": tp, "fp": fp, "fn": fn})
     return rows
-
-
-def choose_threshold(curve: list[dict[str, float]], target_precision: float) -> float:
-    eligible = [row for row in curve if row["precision"] >= target_precision and row["tp"] > 0]
-    if eligible:
-        return float(max(eligible, key=lambda row: (row["recall"], row["f1"]))["threshold"])
-    return float(max(curve, key=lambda row: row["f1"])["threshold"])
 
 
 def read_truth(path: str | Path) -> dict[str, str]:

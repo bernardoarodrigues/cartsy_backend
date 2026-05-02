@@ -6,7 +6,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any
 
 import numpy as np
 from dotenv import load_dotenv
@@ -17,7 +16,7 @@ from cartsy_dedupe.utils.pipeline_cache import (
     normalization_cache_dir,
     read_normalization_cache,
 )
-from cartsy_dedupe.utils.pipeline_helpers import embedding_text
+from cartsy_dedupe.utils.pipeline_helpers import batched, embedding_text
 from cartsy_dedupe.utils.pipeline_metrics import RunMetrics
 
 
@@ -88,11 +87,6 @@ def latest_normalization_file(normalization_dir: Path) -> Path:
     if not candidates:
         raise RuntimeError(f"No normalization cache files found in '{normalization_dir}'.")
     return candidates[0]
-
-
-def batched(items: list[Any], size: int) -> list[list[Any]]:
-    safe_size = max(1, size)
-    return [items[index : index + safe_size] for index in range(0, len(items), safe_size)]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -17,23 +17,8 @@ from enum import Enum
 from cartsy_dedupe.attributes import sizes_equivalent
 from cartsy_dedupe.config import GENERIC_BRANDS, GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
 from cartsy_dedupe.schemas import NormalizedProduct
+from cartsy_dedupe.text import fuzz
 from cartsy_dedupe.utils.pipeline_helpers import canonicalize_url
-
-try:
-    from rapidfuzz import fuzz
-except ImportError:  # pragma: no cover - exercised only when dependency is absent.
-    import difflib
-
-    class _FallbackFuzz:
-        @staticmethod
-        def token_set_ratio(a: str, b: str) -> float:
-            return difflib.SequenceMatcher(None, a, b).ratio() * 100
-
-        @staticmethod
-        def partial_ratio(a: str, b: str) -> float:
-            return difflib.SequenceMatcher(None, a, b).ratio() * 100
-
-    fuzz = _FallbackFuzz()
 
 
 class MatchCertainty(str, Enum):
