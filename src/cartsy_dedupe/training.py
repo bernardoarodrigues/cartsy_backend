@@ -18,7 +18,7 @@ from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features,
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.schemas import NormalizedProduct
-from cartsy_dedupe.scoring import string_similarity
+from cartsy_dedupe.scoring import score_pair, string_similarity
 from cartsy_dedupe.utils.pipeline_helpers import embedding_text, ensure_openai_api_key
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
 
@@ -422,7 +422,10 @@ def infer_block_keys(left: NormalizedProduct, right: NormalizedProduct) -> set[s
     keys: set[str] = set()
     for key, value in left.identifiers.items():
         if value and value == right.identifiers.get(key):
-            keys.add(f"exact:{key}:{value[:80]}")
+            if key == "sku" and left.retailer and left.retailer == right.retailer:
+                keys.add(f"exact:retailer_sku:{left.retailer}:{value[:80]}")
+            else:
+                keys.add(f"exact:{key}:{value[:80]}")
     title_similarity = string_similarity(left.name_norm, right.name_norm)
     search_similarity = string_similarity(" ".join([left.name_norm, left.category_norm]), " ".join([right.name_norm, right.category_norm]))
     if search_similarity >= 0.55:
@@ -442,7 +445,15 @@ def pair_feature_rows(
         pair_key = (example.left_index, example.right_index)
         left = products[example.left_index]
         right = products[example.right_index]
-        features = build_pair_features(left, right, example.block_keys, semantic_sim=semantic_by_pair.get(pair_key, 0.0))
+        rule_result = score_pair(left, right, merge_threshold=0.84)
+        features = build_pair_features(
+            left,
+            right,
+            example.block_keys,
+            semantic_sim=semantic_by_pair.get(pair_key, 0.0),
+            rule_score=rule_result.score,
+            rule_auto_blocked=rule_result.auto_blocked,
+        )
         rows.append(
             {
                 "left_source_id": left.source_id,

@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 
 from cartsy_dedupe.attributes import sizes_equivalent
+from cartsy_dedupe.config import GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
 from cartsy_dedupe.schemas import NormalizedProduct
 from cartsy_dedupe.text import STOPWORDS, normalize_text
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
@@ -46,12 +47,19 @@ DEFAULT_FEATURE_COLUMNS = [
     "price_ratio_diff",
     "price_both_present",
     "identifier_any",
+    "exact_global_id",
     "exact_ean",
     "exact_gtin",
     "exact_upc",
     "exact_asin",
+    "exact_retailer_sku",
+    "exact_canonical_url",
+    "exact_key_count",
+    "exact_evidence_strength",
     "exact_sku_same_retailer",
     "exact_sku_cross_retailer",
+    "rule_score",
+    "rule_auto_blocked",
     "lexical_sim",
     "trigram_sim",
     "semantic_sim",
@@ -96,6 +104,8 @@ def build_pair_features(
     block_keys: set[str],
     *,
     semantic_sim: float = 0.0,
+    rule_score: float = 0.0,
+    rule_auto_blocked: bool = False,
 ) -> dict[str, float]:
     """Build the stable pairwise ML features ported from the experiment.
 
@@ -105,6 +115,7 @@ def build_pair_features(
     shared_identifier_keys = {
         key for key in left.identifiers if left.identifiers.get(key) and left.identifiers.get(key) == right.identifiers.get(key)
     }
+    exact = exact_evidence_flags(block_keys)
     retrieval = postgres_retrieval_features(block_keys)
     price_ratio_diff = safe_ratio_diff(left.price_cents, right.price_cents)
     size_match, size_conflict = size_flags(left, right)
@@ -128,13 +139,23 @@ def build_pair_features(
         "pack_conflict": pack_conflict,
         "price_ratio_diff": 1.0 if math.isnan(price_ratio_diff) else price_ratio_diff,
         "price_both_present": float(not math.isnan(price_ratio_diff)),
-        "identifier_any": float(bool(shared_identifier_keys)),
+        "identifier_any": float(bool(shared_identifier_keys) or exact["exact_key_count"] > 0),
+        "exact_global_id": exact["exact_global_id"],
         "exact_ean": float("ean" in shared_identifier_keys),
         "exact_gtin": float("gtin" in shared_identifier_keys),
         "exact_upc": float("upc" in shared_identifier_keys),
-        "exact_asin": float("asin" in shared_identifier_keys),
-        "exact_sku_same_retailer": float("sku" in shared_identifier_keys and left.retailer == right.retailer),
+        "exact_asin": max(float("asin" in shared_identifier_keys), exact["exact_asin"]),
+        "exact_retailer_sku": exact["exact_retailer_sku"],
+        "exact_canonical_url": exact["exact_canonical_url"],
+        "exact_key_count": exact["exact_key_count"],
+        "exact_evidence_strength": exact["exact_evidence_strength"],
+        "exact_sku_same_retailer": max(
+            float("sku" in shared_identifier_keys and left.retailer == right.retailer),
+            exact["exact_retailer_sku"],
+        ),
         "exact_sku_cross_retailer": float("sku" in shared_identifier_keys and left.retailer != right.retailer),
+        "rule_score": clamp01(rule_score),
+        "rule_auto_blocked": float(rule_auto_blocked),
         "lexical_sim": retrieval["lexical"],
         "trigram_sim": retrieval["trigram"],
         "semantic_sim": clamp01(semantic_sim),
@@ -142,6 +163,54 @@ def build_pair_features(
         "variant_conflict": variant_conflict(left, right, left_salient=left_salient, right_salient=right_salient),
     }
     return {column: float(features[column]) for column in DEFAULT_FEATURE_COLUMNS}
+
+
+def exact_evidence_flags(block_keys: set[str]) -> dict[str, float]:
+    """Summarize exact retrieval evidence for both ML features and merge policy."""
+    exact_types: set[str] = set()
+    for block_key in block_keys:
+        if not block_key.startswith("exact:"):
+            continue
+        parts = block_key.split(":", 2)
+        if len(parts) < 3:
+            continue
+        exact_types.add(parts[1])
+
+    exact_global = any(key in exact_types for key in GLOBAL_IDENTIFIER_KEYS)
+    exact_asin = any(key in exact_types for key in MARKETPLACE_IDENTIFIER_KEYS)
+    exact_retailer_sku = any(key.startswith("retailer_sku") for key in exact_types)
+    exact_canonical_url = "canonical_url" in exact_types
+    exact_key_count = float(len(exact_types))
+    strength = 0.0
+    if exact_global:
+        strength = 1.0
+    elif exact_asin:
+        strength = 0.92
+    elif exact_retailer_sku:
+        strength = 0.88
+    elif exact_canonical_url:
+        strength = 0.86
+
+    return {
+        "exact_global_id": float(exact_global),
+        "exact_asin": float(exact_asin),
+        "exact_retailer_sku": float(exact_retailer_sku),
+        "exact_canonical_url": float(exact_canonical_url),
+        "exact_key_count": exact_key_count,
+        "exact_evidence_strength": strength,
+    }
+
+
+def strong_exact_merge_reason(features: Mapping[str, float]) -> str:
+    if float(features.get("exact_global_id", 0.0)) > 0.0:
+        return "strong_exact:global_identifier"
+    if float(features.get("exact_asin", 0.0)) > 0.0:
+        return "strong_exact:asin"
+    if float(features.get("exact_retailer_sku", 0.0)) > 0.0:
+        return "strong_exact:retailer_sku"
+    if float(features.get("exact_canonical_url", 0.0)) > 0.0:
+        return "strong_exact:canonical_url"
+    return ""
 
 
 def feature_vector(features: Mapping[str, float], columns: list[str] | tuple[str, ...] = DEFAULT_FEATURE_COLUMNS) -> list[float]:

@@ -11,7 +11,7 @@ from cartsy_dedupe.pipeline import (
     extracted_attribute_score,
     postgres_retrieval_features,
 )
-from cartsy_dedupe.utils.pipeline_helpers import ExtractedAttributes
+from cartsy_dedupe.utils.pipeline_helpers import ExtractedAttributes, canonicalize_url
 from cartsy_dedupe.utils.pipeline_cache import (
     code_fingerprint,
     embedding_cache_key,
@@ -88,6 +88,12 @@ def test_extracted_attributes_schema_avoids_dynamic_object_fields() -> None:
     schema = ExtractedAttributes.model_json_schema()
 
     assert "open_attributes" not in schema["properties"]
+
+
+def test_canonicalize_url_keeps_product_urls_but_drops_click_redirects() -> None:
+    assert canonicalize_url("https://www.example.com/products/cetaphil-473ml?utm_source=x")
+    assert canonicalize_url("https://click.mercadolivre.com.br/count?url=https%3A%2F%2Fexample.com") == ""
+    assert canonicalize_url("https://example.com/redirect/product/123") == ""
 
 
 def test_vector_gating_builds_anchor_and_pool_indexes_from_cheap_retrieval(monkeypatch) -> None:
@@ -193,6 +199,53 @@ def test_score_postgres_pair_uses_logistic_model_and_hard_contradiction() -> Non
     assert pair.decision == "no_merge"
     assert pair.score < 0.84
     assert pair.feature_scores["ml_score"] == 0.95
+    assert pair.feature_scores["hard_contradiction"] == 1.0
+
+
+def test_score_postgres_pair_exact_retailer_sku_bypasses_low_ml_score() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.12),
+        "feature_columns": ["brand_exact", "title_token_set", "exact_retailer_sku", "rule_score"],
+        "threshold": 0.84,
+    }
+    left = _product(id="1", sku="SHARED", prod_name="Cetaphil Locao 473ml")
+    right = _product(id="2", sku="SHARED", prod_name="Cetaphil Locao 473ml")
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"exact:retailer_sku:amazon_br:SHARED"},
+        PipelineConfig(merge_threshold=0.84),
+        semantic_sim=0.20,
+    )
+
+    assert pair.decision == "merge"
+    assert pair.score >= 0.84
+    assert pair.feature_scores["ml_score"] == 0.12
+    assert pair.feature_scores["exact_merge"] == 1.0
+    assert "strong_exact:retailer_sku" in pair.explanation
+
+
+def test_score_postgres_pair_exact_evidence_cannot_bypass_hard_contradiction() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.12),
+        "feature_columns": ["exact_retailer_sku", "size_conflict"],
+        "threshold": 0.84,
+    }
+    left = _product(id="1", sku="SHARED", dimension="200ml", prod_name="Cetaphil Locao 200ml")
+    right = _product(id="2", sku="SHARED", dimension="473ml", prod_name="Cetaphil Locao 473ml")
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"exact:retailer_sku:amazon_br:SHARED"},
+        PipelineConfig(merge_threshold=0.84),
+    )
+
+    assert pair.decision == "no_merge"
+    assert pair.feature_scores["exact_merge"] == 0.0
     assert pair.feature_scores["hard_contradiction"] == 1.0
 
 

@@ -50,9 +50,37 @@ def canonicalize_url(url: str) -> str:
     parsed = urlparse(url)
     host = parsed.netloc.lower().removeprefix("www.")
     path = parsed.path.rstrip("/").lower()
-    if not host or not path:
+    if not host or not path or not trustworthy_product_url(host, path):
         return ""
     return normalize_text(f"{host} {path}").replace(" ", "/")[:240]
+
+
+def trustworthy_product_url(host: str, path: str) -> bool:
+    """Keep exact URL keys to product pages, not click/redirect/tracking links."""
+    combined = f"{host}/{path}".lower()
+    redirect_tokens = (
+        "click",
+        "count",
+        "redirect",
+        "redir",
+        "goto",
+        "tracking",
+        "track",
+        "affiliate",
+        "afiliado",
+        "adservice",
+        "ads",
+    )
+    if any(token in combined for token in redirect_tokens):
+        return False
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return False
+    text = normalize_text(" ".join(segments))
+    tokens = [token for token in text.split() if len(token) >= 3]
+    has_product_id = any(any(char.isdigit() for char in token) for token in tokens)
+    has_descriptive_slug = len(tokens) >= 2 and sum(len(token) for token in tokens) >= 12
+    return has_product_id or has_descriptive_slug
 
 
 def product_search_text(product: NormalizedProduct) -> str:

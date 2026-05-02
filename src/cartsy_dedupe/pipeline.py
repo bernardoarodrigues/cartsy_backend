@@ -15,7 +15,13 @@ from tqdm import tqdm
 
 from cartsy_dedupe.clustering import build_clusters
 from cartsy_dedupe.config import PipelineConfig
-from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, feature_vector, hard_contradiction_features
+from cartsy_dedupe.features import (
+    DEFAULT_FEATURE_COLUMNS,
+    build_pair_features,
+    feature_vector,
+    hard_contradiction_features,
+    strong_exact_merge_reason,
+)
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.reporting import build_summary_report
@@ -1140,7 +1146,14 @@ class DedupePipeline:
     ) -> CandidatePair:
         rule_result = score_pair(left, right, merge_threshold=config.merge_threshold)
         retrieval = postgres_retrieval_features(block_keys)
-        pair_features = build_pair_features(left, right, block_keys, semantic_sim=semantic_sim)
+        pair_features = build_pair_features(
+            left,
+            right,
+            block_keys,
+            semantic_sim=semantic_sim,
+            rule_score=rule_result.score,
+            rule_auto_blocked=rule_result.auto_blocked,
+        )
         attr_score, attr_relation, attr_reasons = extracted_attribute_score(
             self.extracted_by_source_id.get(left.source_id, {}),
             self.extracted_by_source_id.get(right.source_id, {}),
@@ -1153,18 +1166,23 @@ class DedupePipeline:
             or attr_relation == "same_parent_different_variant"
             or hard_contradiction_features(pair_features)
         )
+        exact_merge_reason = strong_exact_merge_reason(pair_features)
+        exact_merge = bool(exact_merge_reason and not hard_contradiction)
         relation = "same_parent_different_variant" if hard_contradiction else "exact_match"
         score = ml_score
         if hard_contradiction:
             relation = "same_parent_different_variant"
             score = min(score, threshold - 0.01)
+        elif exact_merge:
+            relation = exact_merge_reason
+            score = max(score, pair_features["exact_evidence_strength"], threshold)
         elif score < threshold and score >= config.near_miss_threshold:
             relation = "similar_related_product"
         elif score < config.near_miss_threshold:
             relation = "no_match"
 
         score = max(0.0, min(1.0, score))
-        decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
+        decision = "merge" if not hard_contradiction and (exact_merge or ml_score >= threshold) else "no_merge"
         explanations = [
             f"relation:{relation}",
             f"ml_score:{ml_score:.2f}",
@@ -1190,6 +1208,7 @@ class DedupePipeline:
             "llm_attributes": attr_score,
             "ml_score": ml_score,
             "ml_threshold": threshold,
+            "exact_merge": float(exact_merge),
             "hard_contradiction": float(hard_contradiction),
         }
         feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})

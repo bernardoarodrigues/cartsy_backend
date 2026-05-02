@@ -44,16 +44,31 @@ def test_pair_features_match_experiment_contract() -> None:
     assert features["semantic_sim"] == 0.93
     assert features["retrieval_layer_count"] == 3.0
     assert features["price_both_present"] == 1.0
+    assert "exact_global_id" in DEFAULT_FEATURE_COLUMNS
+    assert "rule_score" in DEFAULT_FEATURE_COLUMNS
 
 
 def test_pair_features_include_identifier_and_variant_conflicts() -> None:
     left = product(id="1", prod_name="Cetaphil Batom Rosa 30ml", sku="SHARED")
     right = product(id="2", prod_name="Cetaphil Gloss Azul 50ml", sku="SHARED", dimension="50ml")
 
-    features = build_pair_features(left, right, {"exact:sku:SHARED"}, semantic_sim=0.91)
+    features = build_pair_features(left, right, {"exact:retailer_sku:amazon_br:SHARED"}, semantic_sim=0.91)
 
     assert features["identifier_any"] == 1.0
+    assert features["exact_retailer_sku"] == 1.0
+    assert features["exact_key_count"] == 1.0
     assert features["exact_sku_same_retailer"] == 1.0
     assert features["size_conflict"] == 1.0
     assert features["variant_conflict"] == 1.0
     assert hard_contradiction_features(features)
+
+
+def test_pair_features_expose_exact_canonical_url_evidence() -> None:
+    left = product(id="1", url="https://example.com/products/cetaphil-473ml")
+    right = product(id="2", url="https://example.com/products/cetaphil-473ml")
+
+    features = build_pair_features(left, right, {"exact:canonical_url:example.com/products/cetaphil-473ml"})
+
+    assert features["identifier_any"] == 1.0
+    assert features["exact_canonical_url"] == 1.0
+    assert features["exact_evidence_strength"] >= 0.86
