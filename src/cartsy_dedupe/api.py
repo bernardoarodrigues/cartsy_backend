@@ -22,8 +22,9 @@ from .query import (
 from .text import normalize_text
 
 
-def create_app(*, runs_root: str | Path = "outputs") -> FastAPI:
+def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "models") -> FastAPI:
     root = Path(os.getenv("CARTSY_RUNS_ROOT", str(runs_root)))
+    models_dir = Path(os.getenv("CARTSY_MODELS_ROOT", str(models_root)))
     app = FastAPI(
         title="Cartsy Dedupe API",
         version="0.1.0",
@@ -41,6 +42,67 @@ def create_app(*, runs_root: str | Path = "outputs") -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, object]:
         return {"ok": True, "runs_root": str(root)}
+
+    @app.get("/model")
+    def get_model_info() -> dict[str, object]:
+        metrics_path = models_dir / "metrics.json"
+        if not metrics_path.exists():
+            raise HTTPException(status_code=404, detail="No trained model found. Run `cartsy-dedupe train-model` first.")
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+
+        coefficients: list[dict[str, object]] = []
+        coeff_path = models_dir / "feature_coefficients.csv"
+        if coeff_path.exists():
+            lines = coeff_path.read_text(encoding="utf-8").strip().splitlines()
+            for line in lines[1:]:
+                parts = line.split(",", 1)
+                if len(parts) == 2:
+                    try:
+                        coefficients.append({"feature": parts[0], "coefficient": float(parts[1])})
+                    except ValueError:
+                        pass
+
+        threshold_curve: list[dict[str, object]] = []
+        curve_path = models_dir / "threshold_curve.csv"
+        if curve_path.exists():
+            lines = curve_path.read_text(encoding="utf-8").strip().splitlines()
+            headers = lines[0].split(",")
+            for line in lines[1:]:
+                parts = line.split(",")
+                if len(parts) == len(headers):
+                    try:
+                        threshold_curve.append({h: float(v) for h, v in zip(headers, parts)})
+                    except ValueError:
+                        pass
+
+        fp_count = 0
+        fn_count = 0
+        fp_path = models_dir / "false_positives.csv"
+        fn_path = models_dir / "false_negatives.csv"
+        if fp_path.exists():
+            fp_count = max(0, len(fp_path.read_text(encoding="utf-8").strip().splitlines()) - 1)
+        if fn_path.exists():
+            fn_count = max(0, len(fn_path.read_text(encoding="utf-8").strip().splitlines()) - 1)
+
+        risky_clusters: list[dict[str, object]] = []
+        risky_path = models_dir / "top_risky_clusters.csv"
+        if risky_path.exists():
+            lines = risky_path.read_text(encoding="utf-8").strip().splitlines()
+            if len(lines) > 1:
+                headers = lines[0].split(",")
+                for line in lines[1:]:
+                    parts = line.split(",", len(headers) - 1)
+                    if len(parts) == len(headers):
+                        risky_clusters.append(dict(zip(headers, parts)))
+
+        return {
+            "metrics": metrics,
+            "feature_coefficients": coefficients,
+            "threshold_curve": threshold_curve,
+            "false_positive_count": fp_count,
+            "false_negative_count": fn_count,
+            "top_risky_clusters": risky_clusters,
+        }
 
     @app.get("/runs")
     def list_runs() -> dict[str, object]:
