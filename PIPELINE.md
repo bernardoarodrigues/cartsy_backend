@@ -35,46 +35,44 @@ Trade-off: this avoids embedding truly unrelated products, but logistic regressi
 
 `src/cartsy_dedupe/features.py` builds the stable pairwise feature contract. `DEFAULT_FEATURE_COLUMNS` is the model contract: adding, removing, or reordering columns invalidates existing `.joblib` bundles and requires retraining.
 
-```text
-same_retailer
-brand_exact
-brand_fuzzy
-title_token_set
-title_partial
-category_exact
-model_token_jaccard
-salient_token_jaccard
-size_match
-size_conflict
-pack_match
-pack_conflict
-price_ratio_diff
-price_both_present
-identifier_any
-exact_global_id
-exact_ean
-exact_gtin
-exact_upc
-exact_asin
-exact_retailer_sku
-exact_canonical_url
-exact_key_count
-exact_evidence_strength
-exact_sku_same_retailer
-exact_sku_cross_retailer
-rule_certain_match       ← CERTAIN_MATCH fired (EAN/GTIN/UPC/ASIN/URL)
-rule_strong_match        ← STRONG_MATCH fired (retailer SKU or brand+title≥0.95)
-rule_likely_match        ← LIKELY_MATCH fired (brand+title≥0.85+size or model overlap)
-rule_certain_block       ← CERTAIN_BLOCK fired (hard contradiction detected)
-lexical_sim
-trigram_sim
-semantic_sim
-retrieval_layer_count
-variant_conflict
-feature_coverage_count   ← count of active evidence channels for this pair
-```
-
-Rule indicator features replace the former single `rule_score` float. The ML model learns a separate weight per certainty level instead of inheriting a pre-baked scalar. `feature_coverage_count` lets the model express lower confidence on pairs where most signals are at their missing-value defaults.
+| Feature | Meaning |
+|---|---|
+| `same_retailer` | 1 if both products come from the same retailer |
+| `brand_exact` | 1 if normalized brand strings are identical |
+| `brand_fuzzy` | Levenshtein ratio of normalized brand strings |
+| `title_token_set` | Token-set ratio of normalized product titles |
+| `title_partial` | Partial ratio of normalized product titles |
+| `category_exact` | 1 if leaf category segments are identical |
+| `model_token_jaccard` | Jaccard similarity of extracted alphanumeric model tokens |
+| `salient_token_jaccard` | Jaccard similarity of title tokens after removing brand, category, stopwords, and digit tokens |
+| `size_match` | 1 if both products have an unambiguous size and they are equivalent |
+| `size_conflict` | 1 if both products have an unambiguous size and they differ |
+| `pack_match` | 1 if both products have an explicit pack count and they agree |
+| `pack_conflict` | 1 if both products have an explicit pack count and they differ |
+| `price_ratio_diff` | Absolute relative price difference — `|p1-p2| / max(p1,p2)` |
+| `price_both_present` | 1 if both products have a non-null price |
+| `identifier_any` | 1 if any shared identifier was found (in-product or from retrieval evidence) |
+| `exact_global_id` | 1 if a shared EAN, GTIN, or UPC was found in retrieval evidence |
+| `exact_ean` | 1 if product-level EAN values agree |
+| `exact_gtin` | 1 if product-level GTIN values agree |
+| `exact_upc` | 1 if product-level UPC values agree |
+| `exact_asin` | 1 if ASIN values agree (product-level or retrieval evidence) |
+| `exact_retailer_sku` | 1 if a same-retailer SKU key was found in retrieval evidence |
+| `exact_canonical_url` | 1 if a canonical product URL key was found in retrieval evidence |
+| `exact_key_count` | Number of distinct exact identifier types matched |
+| `exact_evidence_strength` | Scalar strength of strongest exact evidence (1.0 for global ID, 0.92 for ASIN, …) |
+| `exact_sku_same_retailer` | 1 if SKU matches within the same retailer |
+| `exact_sku_cross_retailer` | 1 if SKU matches across different retailers |
+| `rule_certain_match` | 1 if `CERTAIN_MATCH` fired (EAN/GTIN/UPC/ASIN/URL) |
+| `rule_strong_match` | 1 if `STRONG_MATCH` fired (retailer SKU or brand+title≥0.95 with model overlap) |
+| `rule_likely_match` | 1 if `LIKELY_MATCH` fired (brand+title≥0.85+size, or brand+model overlap+title≥0.70) |
+| `rule_certain_block` | 1 if `CERTAIN_BLOCK` fired (hard contradiction detected) |
+| `lexical_sim` | Normalized FTS rank from the lexical retrieval layer |
+| `trigram_sim` | Trigram title similarity from the trigram retrieval layer |
+| `semantic_sim` | Cosine similarity of dense product embeddings |
+| `retrieval_layer_count` | Number of distinct retrieval layers (exact/lexical/trigram/vector) that surfaced the pair |
+| `variant_conflict` | 1 if same brand but salient title tokens are disjoint (likely a color/shade variant) |
+| `feature_coverage_count` | Count of indicator features carrying non-zero signal; low values flag sparse-evidence pairs |
 
 ## 5. Rule Evaluation And Merge Decision
 
