@@ -119,10 +119,21 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--products", required=True, help="Training product CSV path.")
     train.add_argument("--ground-truth", required=True, help="Ground-truth CSV with source_id,deduped_id.")
     train.add_argument("--output-dir", required=True, help="Directory for model and eval artifacts.")
-    train.add_argument("--target-precision", type=float, default=0.97)
+    train.add_argument(
+        "--target-precision",
+        type=float,
+        default=0.97,
+        help="Stored in metrics for reference. No longer drives threshold selection (see --cv-folds).",
+    )
     train.add_argument("--random-state", type=int, default=42)
     train.add_argument("--max-positive-pairs", type=int, default=50_000)
     train.add_argument("--max-hard-negative-pairs", type=int, default=150_000)
+    train.add_argument(
+        "--cv-folds",
+        type=int,
+        default=5,
+        help="Stratified CV folds for F1-optimal threshold selection (default: 5).",
+    )
     train.add_argument("--use-embeddings", action="store_true", help="Compute dense semantic_sim embeddings during training.")
     train.add_argument(
         "--embedding-provider",
@@ -280,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
                 random_state=args.random_state,
                 max_positive_pairs=args.max_positive_pairs,
                 max_hard_negative_pairs=args.max_hard_negative_pairs,
+                cv_folds=args.cv_folds,
                 use_embeddings=args.use_embeddings,
                 embedding_provider=args.embedding_provider,
                 embedding_model=args.embedding_model,

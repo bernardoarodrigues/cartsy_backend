@@ -82,10 +82,19 @@ def test_train_logistic_regression_writes_eval_artifacts(tmp_path: Path) -> None
         ["source_id", "deduped_id"],
     )
 
-    report = train_logistic_regression(products_path=products_path, ground_truth_path=truth_path, output_dir=tmp_path / "model")
+    # cv_folds=2 to avoid stratification failures with this tiny fixture dataset.
+    report = train_logistic_regression(
+        products_path=products_path,
+        ground_truth_path=truth_path,
+        output_dir=tmp_path / "model",
+        cv_folds=2,
+    )
 
     assert Path(report["model_path"]).is_file()
     assert (tmp_path / "model" / "threshold_curve.csv").is_file()
     assert (tmp_path / "model" / "feature_coefficients.csv").is_file()
     metrics = json.loads((tmp_path / "model" / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["feature_columns"]
+    assert "cv_folds" in metrics
+    assert "cv_thresholds" in metrics
+    assert 0.0 < metrics["threshold"] < 1.0

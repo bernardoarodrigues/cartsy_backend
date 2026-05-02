@@ -200,12 +200,36 @@ def train_logistic_regression(
     use_embeddings: bool = False,
     embedding_provider: str | None = None,
     embedding_model: str | None = None,
+    cv_folds: int = 5,
 ) -> dict[str, object]:
+    """Train, calibrate, and evaluate a logistic-regression pair scorer.
+
+    Splits data into train (≈70%), calibration (≈15%), and test (≈15%) sets.
+    Threshold selection uses ``cv_folds``-fold stratified cross-validation on
+    the training set, picking the median F1-maximising threshold across folds.
+    After threshold selection the base model is calibrated on the held-out
+    calibration split using ``CalibratedClassifierCV(method='isotonic')``,
+    making ``P(merge)`` values reliable so that the threshold is meaningful
+    rather than artificially pushed toward extremes.
+
+    For small datasets where the three-split or CV would fail, the function
+    falls back to a simpler 70/30 split with a single F1-optimal threshold.
+
+    Parameters
+    ----------
+    target_precision:
+        Retained for backward compatibility — stored in the metrics JSON but
+        no longer used to select the decision threshold.
+    cv_folds:
+        Number of stratified CV folds for threshold selection.  Automatically
+        clamped down when the training set is too small.
+    """
     load_dotenv(dotenv_path=Path.cwd() / ".env")
     from joblib import dump
+    from sklearn.calibration import CalibratedClassifierCV
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import average_precision_score, precision_recall_fscore_support
-    from sklearn.model_selection import train_test_split
+    from sklearn.model_selection import StratifiedKFold, train_test_split
     from sklearn.preprocessing import StandardScaler
 
     output_path = Path(output_dir)
@@ -268,22 +292,96 @@ def train_logistic_regression(
     y = np.array([int(row["label"]) for row in rows], dtype=int)
     logger.info("Feature matrix shape %s (%d columns)", x.shape, len(DEFAULT_FEATURE_COLUMNS))
     indexes = np.arange(len(rows))
-    train_idx, test_idx = train_test_split(indexes, test_size=0.30, random_state=random_state, stratify=y)
+
+    # ── Dataset splitting ──────────────────────────────────────────────────────
+    # Prefer three-split (70/15/15) for calibration.  Fall back to simple 70/30
+    # when the dataset is too small for stratified splits across three sets.
+    min_class_n = min(int(y.sum()), len(y) - int(y.sum()))
+    cal_idx: np.ndarray = np.array([], dtype=int)
+    if min_class_n >= 10:
+        try:
+            train_cal_idx, test_idx = train_test_split(
+                indexes, test_size=0.15, random_state=random_state, stratify=y
+            )
+            train_idx, cal_idx = train_test_split(
+                train_cal_idx,
+                test_size=round(0.15 / 0.85, 6),
+                random_state=random_state,
+                stratify=y[train_cal_idx],
+            )
+            logger.info(
+                "Three-split: train=%d, calibration=%d, test=%d",
+                len(train_idx), len(cal_idx), len(test_idx),
+            )
+        except ValueError:
+            logger.warning("Three-split stratification failed; falling back to 70/30 split")
+            train_idx, test_idx = train_test_split(indexes, test_size=0.30, random_state=random_state, stratify=y)
+    else:
+        logger.info("Small dataset (%d pairs) — using 70/30 split, skipping calibration", len(rows))
+        stratify_arg = y if min_class_n >= 2 else None
+        train_idx, test_idx = train_test_split(indexes, test_size=0.30, random_state=random_state, stratify=stratify_arg)
+
     logger.info("Train/test split: %d train pairs, %d test pairs", len(train_idx), len(test_idx))
-    model = LogisticRegression(max_iter=2_000, class_weight="balanced", random_state=random_state)
+
+    # ── Scaler + base model ────────────────────────────────────────────────────
     scaler = StandardScaler()
-    x_train = scaler.fit_transform(x[train_idx])
-    logger.info("Fitting logistic regression on %d training rows", len(train_idx))
-    model.fit(x_train, y[train_idx])
-    logger.info("Scoring held-out test set and calibrating threshold (target_precision=%s)", target_precision)
+    x_train_scaled = scaler.fit_transform(x[train_idx])
+    base_model = LogisticRegression(max_iter=2_000, class_weight="balanced", random_state=random_state)
+    logger.info("Fitting base logistic regression on %d training rows", len(train_idx))
+    base_model.fit(x_train_scaled, y[train_idx])
+
+    # ── CV threshold selection ─────────────────────────────────────────────────
+    # Choose the median F1-maximising threshold across CV folds so the decision
+    # boundary is stable across distribution rather than fitted to one test set.
+    train_pos = int((y[train_idx] == 1).sum())
+    train_neg = int((y[train_idx] == 0).sum())
+    effective_folds = min(cv_folds, min(train_pos, train_neg))
+    effective_folds = max(2, effective_folds)
+    if effective_folds != cv_folds:
+        logger.warning("Clamped cv_folds from %d to %d (small training class size)", cv_folds, effective_folds)
+
+    cv_thresholds: list[float] = []
+    if train_pos >= effective_folds and train_neg >= effective_folds:
+        cv = StratifiedKFold(n_splits=effective_folds, shuffle=True, random_state=random_state)
+        for fold_train_local, fold_val_local in cv.split(x_train_scaled, y[train_idx]):
+            fold_model = LogisticRegression(max_iter=2_000, class_weight="balanced", random_state=random_state)
+            fold_model.fit(x_train_scaled[fold_train_local], y[train_idx][fold_train_local])
+            fold_scores = fold_model.predict_proba(x_train_scaled[fold_val_local])[:, 1]
+            curve = build_threshold_curve(y[train_idx][fold_val_local], fold_scores)
+            best = max(curve, key=lambda r: r["f1"])
+            cv_thresholds.append(float(best["threshold"]))
+        threshold = float(np.median(cv_thresholds))
+        logger.info("CV threshold selection (%d folds): thresholds=%s median=%.4f", effective_folds, cv_thresholds, threshold)
+    else:
+        # Too few samples for reliable CV — use F1-optimal on test set as fallback.
+        logger.warning("Skipping CV threshold (too few samples per class); using F1-optimal on test set")
+        fallback_scores = base_model.predict_proba(scaler.transform(x[test_idx]))[:, 1]
+        fallback_curve = build_threshold_curve(y[test_idx], fallback_scores)
+        threshold = float(max(fallback_curve, key=lambda r: r["f1"])["threshold"])
+        cv_thresholds = [threshold]
+
+    # ── Probability calibration ────────────────────────────────────────────────
+    # Calibrating with isotonic regression makes P(merge) values reliable so
+    # that the threshold corresponds to an actual probability rather than a raw
+    # logit-derived score that may be pushed to extremes on imbalanced data.
+    can_calibrate = len(cal_idx) >= 4 and int((y[cal_idx] == 1).sum()) >= 1 and int((y[cal_idx] == 0).sum()) >= 1
+    if can_calibrate:
+        logger.info("Calibrating model on %d held-out calibration samples", len(cal_idx))
+        model = CalibratedClassifierCV(base_model, cv="prefit", method="isotonic")
+        model.fit(scaler.transform(x[cal_idx]), y[cal_idx])
+    else:
+        logger.info("Skipping calibration (calibration set too small or absent)")
+        model = base_model  # type: ignore[assignment]
+
+    # ── Evaluation on test set ─────────────────────────────────────────────────
+    logger.info("Evaluating on test set (%d pairs, threshold=%.4f)", len(test_idx), threshold)
     test_scores = model.predict_proba(scaler.transform(x[test_idx]))[:, 1]
     threshold_curve = build_threshold_curve(y[test_idx], test_scores)
-    threshold = choose_threshold(threshold_curve, target_precision)
     test_pred = (test_scores >= threshold).astype(int)
     precision, recall, f1, _ = precision_recall_fscore_support(y[test_idx], test_pred, average="binary", zero_division=0)
     average_precision = average_precision_score(y[test_idx], test_scores) if len(set(y[test_idx])) > 1 else 0.0
     logger.info(
-        "Test metrics: precision=%.4f recall=%.4f f1=%.4f AP=%.4f chosen_threshold=%.4f",
+        "Test metrics: precision=%.4f recall=%.4f f1=%.4f AP=%.4f threshold=%.4f",
         float(precision),
         float(recall),
         float(f1),
@@ -292,13 +390,15 @@ def train_logistic_regression(
     )
 
     bundle = {
-        "model_type": "logistic_regression",
+        "model_type": "logistic_regression_calibrated",
         "model": model,
+        "base_model": base_model,
         "scaler": scaler,
         "feature_columns": DEFAULT_FEATURE_COLUMNS,
         "threshold": threshold,
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),
         "target_precision": target_precision,
+        "cv_folds": effective_folds,
         "use_embeddings": use_embeddings,
         "embedding_provider": resolved_embedding_provider,
         "embedding_model": resolved_embedding_model,
@@ -309,7 +409,7 @@ def train_logistic_regression(
 
     logger.info("Writing eval artifacts (curves, errors, risky clusters)")
     write_threshold_curve(output_path / "threshold_curve.csv", threshold_curve)
-    write_feature_coefficients(output_path / "feature_coefficients.csv", model.coef_[0], DEFAULT_FEATURE_COLUMNS)
+    write_feature_coefficients(output_path / "feature_coefficients.csv", base_model.coef_[0], DEFAULT_FEATURE_COLUMNS)
     write_error_examples(output_path / "false_positives.csv", rows, test_idx, y[test_idx], test_scores, test_pred, want_label=0, want_pred=1)
     write_error_examples(output_path / "false_negatives.csv", rows, test_idx, y[test_idx], test_scores, test_pred, want_label=1, want_pred=0)
     write_risky_clusters(output_path / "top_risky_clusters.csv", rows, test_idx, test_scores, test_pred)
@@ -318,7 +418,11 @@ def train_logistic_regression(
         "feature_columns": DEFAULT_FEATURE_COLUMNS,
         "threshold": threshold,
         "target_precision": target_precision,
+        "cv_folds": effective_folds,
+        "cv_thresholds": cv_thresholds,
+        "calibrated": can_calibrate,
         "train_pairs": int(len(train_idx)),
+        "calibration_pairs": int(len(cal_idx)),
         "test_pairs": int(len(test_idx)),
         "positive_pairs": int(y.sum()),
         "negative_pairs": int(len(y) - y.sum()),
