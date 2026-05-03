@@ -28,8 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--input", default="data/products.csv", help="Input product CSV path.")
     run.add_argument(
         "--output",
-        default="outputs",
-        help="Output directory root. Run artifacts go under run_<timestamp>/ unless path already starts with run_.",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Output parent directory (default: outputs). Each run uses <DIR>/run_<YYYYMMDD_HHMMSS>/ "
+            "unless the last path component already starts with run_, then that path is used as-is."
+        ),
     )
     run.add_argument("--merge-threshold", type=float, default=0.84)
     run.add_argument(
@@ -201,9 +205,10 @@ def main(argv: list[str] | None = None) -> int:
             near_miss_limit=args.near_miss_limit,
         )
         try:
+            output_root = Path(args.output) if args.output is not None else Path("outputs")
             report = run_pipeline(
                 input_path=Path(args.input),
-                output_dir=resolve_run_output_dir(Path(args.output)),
+                output_dir=resolve_run_output_dir(output_root),
                 config=config,
                 limit=args.limit,
                 dev=args.dev,

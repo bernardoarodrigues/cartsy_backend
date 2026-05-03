@@ -7,13 +7,9 @@ Product entity resolution pipeline for the Cartsy challenge. The project ingests
 ## What Is Included
 
 - `src/cartsy_dedupe/`: ingestion, normalization, retrieval, scoring, clustering, artifact search, API, and training code.
-- `data/products_first20.csv`: tiny public smoke fixture. The full challenge CSVs are expected under `data/` but are not committed because they are large/local inputs.
 - `models/final_submission/`: committed final logistic-regression model plus training diagnostics.
-- `outputs/sample/`: small sample output snapshot from the final full-data run.
-- `diagrams/dedupe-pipeline.svg`: runtime pipeline diagram.
-- `diagrams/training-pipeline.svg`: supervised training pipeline diagram.
-- `PIPELINE.md`: operational pipeline walkthrough and runtime trade-offs.
-- `TRAINING.md`: supervised training, augmentation, threshold selection, and artifact guide.
+- `PIPELINE.md`: pipeline walkthrough and runtime trade-offs
+- `TRAINING.md`: supervised training, augmentation, threshold selection, and artifact walkthrough
 
 ## Quick Setup
 
@@ -43,11 +39,14 @@ Place the full challenge CSV at `data/products.csv`, then run:
 ```bash
 .venv/bin/cartsy-dedupe run \
   --input data/products.csv \
-  --output outputs \
   --ml-model models/final_submission/cartsy_logreg.joblib \
   --merge-threshold 0.84 \
   --evidence-merge-threshold 0.78 \
-  --near-miss-threshold 0.70
+  --near-miss-threshold 0.70 \
+  --near-miss-limit 50000 \
+  --max-block-size none \
+  --max-candidate-pairs none \
+  --dev
 ```
 
 Run artifacts are written under timestamped directories such as `outputs/run_20260503_130136`:
@@ -63,7 +62,15 @@ summary_report.json
 
 Use `--dev` for progress logs. Use `--max-block-size none --max-candidate-pairs none` only for uncapped validation on a machine that can handle the larger candidate set.
 
-## Query A Completed Run
+## Querying A Completed Run
+
+REST API
+
+```bash
+.venv/bin/cartsy-dedupe serve --runs-root outputs --host 127.0.0.1 --port 8000
+```
+
+CLI
 
 ```bash
 .venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/run_YYYYMMDD_HHMMSS --limit 5
@@ -71,20 +78,12 @@ Use `--dev` for progress logs. Use `--max-block-size none --max-candidate-pairs 
 .venv/bin/cartsy-dedupe explain <source_id_a> <source_id_b> --run outputs/run_YYYYMMDD_HHMMSS
 ```
 
-Optional semantic indexing over completed artifacts:
+Semantic indexing over output artifacts:
 
 ```bash
 .venv/bin/cartsy-dedupe index-artifacts --run outputs/run_YYYYMMDD_HHMMSS
 .venv/bin/cartsy-dedupe search-artifacts "similar lipstick different shade" --run-id run_YYYYMMDD_HHMMSS --type near_miss
 ```
-
-Optional REST API:
-
-```bash
-.venv/bin/cartsy-dedupe serve --runs-root outputs --host 127.0.0.1 --port 8000
-```
-
-Useful endpoints include `/health`, `/runs`, `/runs/{run_id}/summary`, `/runs/{run_id}/products`, `/runs/{run_id}/groups/{dedupe_id}`, and `/runs/{run_id}/explain`.
 
 ## Architecture Overview
 
