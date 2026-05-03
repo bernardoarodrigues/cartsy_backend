@@ -269,5 +269,9 @@ concepts:
 Accepted exact-policy merges can therefore have low `ml_score` but high
 `evidence_score`; that is intentional and keeps policy decisions explainable
 instead of flattening confidence to the model threshold.
+No-merge pairs below the near-miss threshold are normally dropped from artifacts,
+but `below_evidence_threshold` pairs are retained when the model score exceeded
+the merge threshold. These are high-value calibration examples: the model wanted
+to merge, but independent evidence was too weak.
 
 The durable artifact files are the source of truth for completed-run search, explanations, and API responses.

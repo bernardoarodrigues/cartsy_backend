@@ -340,7 +340,7 @@ class DedupePipeline:
                 config,
                 semantic_sim=semantic_similarities.get((left_index, right_index), 0.0),
             )
-            if pair.decision == "no_merge" and pair.score < config.near_miss_threshold:
+            if should_drop_no_merge_pair(pair, config):
                 continue
             candidate_pairs.append(pair)
             if pair_number % 100_000 == 0:
@@ -1325,6 +1325,22 @@ def pair_evidence_score(
     if pair_features.get("variant_conflict", 0.0):
         score -= 0.12
     return max(0.0, min(1.0, score))
+
+
+def should_drop_no_merge_pair(pair: CandidatePair, config: PipelineConfig) -> bool:
+    """Return True when a no-merge pair is too weak to keep as a run artifact.
+
+    Most low-score no-merge pairs are noise. The exception is an overconfident
+    model score blocked by the evidence gate; those pairs are exactly the
+    diagnostics needed for calibration and production-candidate retraining.
+    """
+    if pair.decision != "no_merge":
+        return False
+    if pair.score >= config.near_miss_threshold:
+        return False
+    if pair.decision_reason == "below_evidence_threshold" and pair.ml_score >= pair.decision_threshold:
+        return False
+    return True
 
 
 def decision_reason_labels(

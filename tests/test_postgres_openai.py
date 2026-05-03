@@ -12,6 +12,7 @@ from cartsy_dedupe.pipeline import (
     cosine_similarity,
     embedding_text,
     postgres_retrieval_features,
+    should_drop_no_merge_pair,
 )
 from cartsy_dedupe.utils.pipeline_cache import (
     cache_path_for,
@@ -452,6 +453,35 @@ def test_score_postgres_pair_blocks_weak_vector_only_ml_merge() -> None:
     assert pair.decision_reason == "below_evidence_threshold"
     assert "relation:similar_related_product" in pair.explanation
     assert "evidence_threshold:0.70" in pair.explanation
+
+
+def test_overconfident_evidence_blocked_pair_is_kept_for_diagnostics() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.96),
+        "feature_columns": [
+            "brand_exact",
+            "title_token_set",
+            "semantic_sim",
+            "size_conflict",
+            "retrieval_layer_count",
+        ],
+        "threshold": 0.84,
+    }
+    left = _product(id="1", brand="genérico", sku="B0FGGLCTPS", prod_name="Máquina Profissional Dragão", dimension="")
+    right = _product(id="2", brand="Mega", retailer="epoca_cosmeticos", sku="", prod_name="Máquina de Corte Mega", dimension="")
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"vector:cosine:0.7806"},
+        PipelineConfig(merge_threshold=0.84, evidence_merge_threshold=0.70),
+        semantic_sim=0.7806,
+    )
+
+    assert pair.decision == "no_merge"
+    assert pair.score < 0.70
+    assert should_drop_no_merge_pair(pair, PipelineConfig(near_miss_threshold=0.70)) is False
 
 
 def test_score_postgres_pair_allows_ml_merge_with_corroborated_evidence() -> None:
