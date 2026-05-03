@@ -199,6 +199,21 @@ Every training run writes threshold curves, precision/recall/F1, CV thresholds, 
 
 When `DEFAULT_FEATURE_COLUMNS` changes, retrain the model — the runtime `load_ml_model` check validates that bundle feature columns match the current contract and rejects stale bundles.
 
+Completed runs should be evaluated against production candidate pairs before a
+model is treated as trustworthy:
+
+```bash
+cartsy-dedupe evaluate-run \
+  --run outputs/run_20260501_193000 \
+  --ground-truth data/ground_truth_merged.csv
+```
+
+The command writes `labeled_evaluation.json` with overall precision/recall/F1
+and slice metrics for retrieval layers such as `risk:vector_only`,
+`risk:generic_brand`, `evidence:exact`, `evidence:lexical`, `evidence:trigram`,
+and `evidence:vector`. Blank `deduped_id` values are ignored by default because
+they can otherwise create a single giant false-positive ground-truth cluster.
+
 ## 8. Retrieval Defaults
 
 The production recall profile should keep all retrieval layers enabled:

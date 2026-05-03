@@ -78,6 +78,16 @@ Use `--dev` for progress bars and stage logs. Use `--max-block-size none --max-c
 
 Run artifacts go under timestamped directories such as `outputs/run_20260501_193000`.
 
+Evaluate completed runs against labels before trusting a model:
+
+```bash
+.venv/bin/cartsy-dedupe evaluate-run \
+  --run outputs/run_20260501_193000 \
+  --ground-truth data/ground_truth_merged.csv
+```
+
+This writes `labeled_evaluation.json` in the run directory with overall precision/recall plus risky slices such as vector-only and generic-brand candidate pairs. Blank `deduped_id` labels are ignored by default so accidental empty-label clusters do not inflate positives.
+
 ## Outputs
 
 Each run writes:

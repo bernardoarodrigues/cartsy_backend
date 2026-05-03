@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .artifact_index import index_artifacts, search_artifacts
 from .config import PipelineConfig
+from .evaluation import evaluate_run_against_truth
 from .pipeline import run_pipeline
 from .query import explain_pair, get_group, print_table, search_products
 from .training import augment_training_data, train_logistic_regression
@@ -157,6 +158,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Embedding backend. Default: CARTSY_EMBEDDING_PROVIDER or openai.",
     )
     train.add_argument("--embedding-model", default=None)
+
+    evaluate = subparsers.add_parser("evaluate-run", help="Evaluate a completed run against source_id,deduped_id labels.")
+    evaluate.add_argument("--run", required=True, help="Completed run output directory.")
+    evaluate.add_argument("--ground-truth", required=True, help="Ground-truth CSV with source_id,deduped_id.")
+    evaluate.add_argument(
+        "--output",
+        default=None,
+        help="Optional JSON output path. Defaults to <run>/labeled_evaluation.json.",
+    )
+    evaluate.add_argument(
+        "--include-blank-labels",
+        action="store_true",
+        help="Treat blank deduped_id values as a real label. Off by default to avoid accidental giant blank clusters.",
+    )
 
     return parser
 
@@ -316,6 +331,17 @@ def main(argv: list[str] | None = None) -> int:
         except (RuntimeError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "evaluate-run":
+        output_path = Path(args.output) if args.output else Path(args.run) / "labeled_evaluation.json"
+        report = evaluate_run_against_truth(
+            run_dir=args.run,
+            ground_truth_path=args.ground_truth,
+            output_path=output_path,
+            include_blank_labels=args.include_blank_labels,
+        )
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
 
