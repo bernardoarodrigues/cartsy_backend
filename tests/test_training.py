@@ -190,7 +190,7 @@ def test_rescue_test_threshold_uses_test_curve_when_calibration_floor_misses() -
 def test_training_embeddings_reuse_product_cache(tmp_path: Path, monkeypatch) -> None:
     products = [normalize_row(row) for row in product_rows()[:2]]
     cache_root = tmp_path / "cache"
-    cache_path = cache_root / "embeddings" / "all-products" / "existing.json"
+    cache_path = cache_root / "embeddings" / "existing.json"
     write_embedding_cache(
         cache_path,
         entries={
@@ -240,7 +240,7 @@ def test_training_embeddings_reuse_product_cache(tmp_path: Path, monkeypatch) ->
 def test_training_embeddings_reuse_matrix_cache_without_provider_call(tmp_path: Path, monkeypatch) -> None:
     products = [normalize_row(row) for row in product_rows()[:2]]
     cache_root = tmp_path / "cache"
-    cache_dir = cache_root / "embeddings" / "all-products"
+    cache_dir = cache_root / "embeddings"
     cache_dir.mkdir(parents=True)
     stem = "embeddings_norm-key_20260430_192710"
     np.save(cache_dir / f"{stem}.npy", np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64))
@@ -279,7 +279,7 @@ def test_training_embeddings_reuse_matrix_cache_without_provider_call(tmp_path: 
 def test_training_embeddings_reuse_older_matrix_cache_for_augmented_rows(tmp_path: Path, monkeypatch) -> None:
     products = [normalize_row(row) for row in product_rows()[:3]]
     cache_root = tmp_path / "cache"
-    cache_dir = cache_root / "embeddings" / "all-products"
+    cache_dir = cache_root / "embeddings"
     cache_dir.mkdir(parents=True)
     stem = "embeddings_original-key_20260430_192710"
     np.save(cache_dir / f"{stem}.npy", np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64))
@@ -329,7 +329,7 @@ def test_training_embeddings_reuse_older_matrix_cache_for_augmented_rows(tmp_pat
 
 def test_training_embedding_cache_ignores_wrong_dimensions(tmp_path: Path, monkeypatch) -> None:
     cache_root = tmp_path / "cache"
-    cache_path = cache_root / "embeddings" / "all-products" / "mixed.json"
+    cache_path = cache_root / "embeddings" / "mixed.json"
     write_embedding_cache(
         cache_path,
         entries={
@@ -349,7 +349,7 @@ def test_training_embedding_cache_ignores_wrong_dimensions(tmp_path: Path, monke
 def test_openai_training_cache_ignores_stale_env_dimension(tmp_path: Path, monkeypatch) -> None:
     products = [normalize_row(row) for row in product_rows()[:2]]
     cache_root = tmp_path / "cache"
-    cache_path = cache_root / "embeddings" / "all-products" / "mixed.json"
+    cache_path = cache_root / "embeddings" / "mixed.json"
     good_embedding = [1.0] + [0.0] * 1535
     stale_embedding = [1.0] + [0.0] * 383
     write_embedding_cache(

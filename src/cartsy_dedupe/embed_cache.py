@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Directory where embeddings and source-id index files will be written. "
-            "Default: pipeline embedding cache dir (embeddings/all-products)."
+            "Default: pipeline embedding cache dir (embeddings/)."
         ),
     )
     parser.add_argument(

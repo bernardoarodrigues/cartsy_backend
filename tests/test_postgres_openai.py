@@ -665,7 +665,6 @@ def test_embed_products_reuses_cached_embeddings_without_provider_call(tmp_path:
     cache_path = (
         Path(tmp_path / "cache")
         / "embeddings"
-        / "all-products"
         / f"{embedding_cache_key(normalization_key='norm-key', embedding_provider=pipeline.embedding_provider, embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
     )
     write_embedding_cache(
@@ -728,7 +727,7 @@ def test_embed_products_reuses_matrix_embedding_cache_without_provider_call(
         "color: ribbon",
         "1 pack",
     )
-    cache_dir = Path(tmp_path / "cache") / "embeddings" / "all-products"
+    cache_dir = Path(tmp_path / "cache") / "embeddings"
     cache_dir.mkdir(parents=True)
     stem = "embeddings_norm-key_20260430_192710"
     np.save(cache_dir / f"{stem}.npy", np.asarray([[0.1, 0.2, 0.3]], dtype=np.float64))
@@ -784,7 +783,6 @@ def test_embed_products_skips_cached_embeddings_with_wrong_dimensions(tmp_path: 
     cache_path = (
         Path(tmp_path / "cache")
         / "embeddings"
-        / "all-products"
         / f"{embedding_cache_key(normalization_key='norm-key', embedding_provider=pipeline.embedding_provider, embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
     )
     write_embedding_cache(
