@@ -11,6 +11,7 @@ from cartsy_dedupe.training import (
     PairExample,
     augment_training_data,
     compute_training_semantic_similarities,
+    filter_training_rows,
     load_training_embedding_cache_entries,
     select_threshold_row,
     train_logistic_regression,
@@ -115,6 +116,20 @@ def test_train_logistic_regression_writes_eval_artifacts(tmp_path: Path) -> None
     assert "cv_thresholds" in metrics
     assert "threshold_selection_method" in metrics
     assert 0.0 < metrics["threshold"] < 1.0
+    assert "filtered_positive_contradictions" in metrics
+
+
+def test_filter_training_rows_removes_hard_contradictory_positives() -> None:
+    rows = [
+        {"left_source_id": "1", "right_source_id": "2", "label": 1, "hard_contradiction": 1},
+        {"left_source_id": "3", "right_source_id": "4", "label": 1, "hard_contradiction": 0},
+        {"left_source_id": "5", "right_source_id": "6", "label": 0, "hard_contradiction": 1},
+    ]
+
+    kept, filtered = filter_training_rows(rows)
+
+    assert [row["left_source_id"] for row in kept] == ["3", "5"]
+    assert [row["left_source_id"] for row in filtered] == ["1"]
 
 
 def test_select_threshold_row_honors_precision_floor() -> None:

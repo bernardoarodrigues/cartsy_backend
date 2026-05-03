@@ -215,6 +215,10 @@ positive slices for `variant_token_conflict`, `kit_standalone_conflict`,
 `kit_count_conflict`, `kit_component_conflict`, `product_form_conflict`, and `weak_exact_contradiction`;
 these are the model-facing signals that should teach logistic regression that
 same-brand, high-title-similarity variants can still be different products.
+Positive training pairs that trigger hard contradiction features are filtered
+before model fitting and written to `filtered_positive_contradictions.csv`,
+because runtime policy will not merge those pairs and keeping them as positives
+teaches unsafe coefficient signs.
 
 Completed runs should be evaluated against production candidate pairs before a
 model is treated as trustworthy:

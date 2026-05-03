@@ -348,7 +348,17 @@ def train_logistic_regression(
         logger.info("Skipping embeddings (lexical and structural features only)")
         semantic_by_pair = {}
     logger.info("Computing pair feature rows (%d pairs)", len(pair_examples))
-    rows = pair_feature_rows(products, pair_examples, semantic_by_pair)
+    raw_rows = pair_feature_rows(products, pair_examples, semantic_by_pair)
+    rows, filtered_positive_contradictions = filter_training_rows(raw_rows)
+    if filtered_positive_contradictions:
+        logger.warning(
+            "Filtered %d positive training pairs with hard contradictions before model fit",
+            len(filtered_positive_contradictions),
+        )
+        write_training_rows(
+            output_path / "filtered_positive_contradictions.csv",
+            filtered_positive_contradictions,
+        )
     x = np.array([[row[column] for column in DEFAULT_FEATURE_COLUMNS] for row in rows], dtype=float)
     y = np.array([int(row["label"]) for row in rows], dtype=int)
     logger.info("Feature matrix shape %s (%d columns)", x.shape, len(DEFAULT_FEATURE_COLUMNS))
@@ -514,6 +524,7 @@ def train_logistic_regression(
         "test_pairs": int(len(test_idx)),
         "positive_pairs": int(y.sum()),
         "negative_pairs": int(len(y) - y.sum()),
+        "filtered_positive_contradictions": len(filtered_positive_contradictions),
         "test_average_precision": float(average_precision),
         "test_precision": float(precision),
         "test_recall": float(recall),
@@ -528,6 +539,7 @@ def train_logistic_regression(
             "false_positives.csv",
             "false_negatives.csv",
             "top_risky_clusters.csv",
+            *([] if not filtered_positive_contradictions else ["filtered_positive_contradictions.csv"]),
         ],
     }
     (output_path / "metrics.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -756,6 +768,24 @@ def pair_feature_rows(
             }
         )
     return rows
+
+
+def filter_training_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Remove contradictory positives that would teach the model unsafe weights.
+
+    Runtime policy will not merge pairs with high-confidence hard contradiction
+    features. Keeping those examples as positive labels in LR training makes the
+    model learn that contradiction features can be positive evidence, which is
+    exactly the failure mode seen in production-like runs.
+    """
+    kept: list[dict[str, Any]] = []
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if int(row.get("label", 0)) == 1 and int(row.get("hard_contradiction", 0)) == 1:
+            filtered.append(row)
+        else:
+            kept.append(row)
+    return kept, filtered
 
 
 def compute_training_semantic_similarities(
@@ -1038,6 +1068,11 @@ def write_error_examples(
     write_csv(path, out[:500], columns)
 
 
+def write_training_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    columns = ["left_source_id", "right_source_id", "label", "hard_contradiction", "blocking_keys", *DEFAULT_FEATURE_COLUMNS]
+    write_csv(path, rows, columns)
+
+
 def write_risky_clusters(path: Path, rows: list[dict[str, Any]], test_idx: np.ndarray, scores: np.ndarray, pred: np.ndarray) -> None:
     risky: list[dict[str, Any]] = []
     for local_pos, row_index in enumerate(test_idx):
@@ -1053,6 +1088,11 @@ def write_risky_clusters(path: Path, rows: list[dict[str, Any]], test_idx: np.nd
                     "label": row["label"],
                     "hard_contradiction": row["hard_contradiction"],
                     "variant_conflict": row["variant_conflict"],
+                    "variant_token_conflict": row["variant_token_conflict"],
+                    "kit_standalone_conflict": row["kit_standalone_conflict"],
+                    "kit_count_conflict": row["kit_count_conflict"],
+                    "kit_component_conflict": row["kit_component_conflict"],
+                    "product_form_conflict": row["product_form_conflict"],
                     "size_conflict": row["size_conflict"],
                     "pack_conflict": row["pack_conflict"],
                     "blocking_keys": row["blocking_keys"],
@@ -1062,7 +1102,22 @@ def write_risky_clusters(path: Path, rows: list[dict[str, Any]], test_idx: np.nd
     write_csv(
         path,
         risky[:200],
-        ["left_source_id", "right_source_id", "score", "label", "hard_contradiction", "variant_conflict", "size_conflict", "pack_conflict", "blocking_keys"],
+        [
+            "left_source_id",
+            "right_source_id",
+            "score",
+            "label",
+            "hard_contradiction",
+            "variant_conflict",
+            "variant_token_conflict",
+            "kit_standalone_conflict",
+            "kit_count_conflict",
+            "kit_component_conflict",
+            "product_form_conflict",
+            "size_conflict",
+            "pack_conflict",
+            "blocking_keys",
+        ],
     )
 
 
