@@ -2,9 +2,7 @@
 
 ![Deduped groups](diagrams/deduped-groups.jpeg)
 
-Production-shaped product entity resolution for the Cartsy product-data challenge. The project ingests messy product CSVs, normalizes them into a stable schema, retrieves candidate duplicate pairs with Postgres exact/FTS/trigram/vector layers, scores uncertain pairs with a calibrated logistic-regression model, and writes queryable deduped-product artifacts.
-
-The implementation is intentionally CLI-first: reviewers can run the batch pipeline, inspect saved artifacts, query a completed run from the terminal, or start the optional read-only REST API.
+Product entity resolution pipeline for the Cartsy challenge. The project ingests messy product CSVs, normalizes them into a stable schema, retrieves candidate duplicate pairs with Postgres exact/FTS/trigram/vector layers, scores uncertain pairs with a calibrated logistic-regression model, and writes queryable deduped-product artifacts.
 
 ## What Is Included
 
@@ -35,28 +33,8 @@ CARTSY_ML_MODEL_PATH=models/final_submission/cartsy_logreg.joblib
 
 For full vector retrieval, choose one embedding backend:
 
-- OpenAI: keep `CARTSY_EMBEDDING_PROVIDER=openai`, set `OPENAI_API_KEY`, and keep `CARTSY_EMBEDDING_DIMENSIONS=1536`.
+- OpenAI: keep `CARTSY_EMBEDDING_PROVIDER=openai`, set `OPENAI_API_KEY`, and keep `CARTSY_EMBEDDING_DIMENSIONS=1536` for `text-embedding-3-small`.
 - Local: set `CARTSY_EMBEDDING_PROVIDER=sentence-transformers`, usually with `CARTSY_EMBEDDING_DIMENSIONS=384` for `all-MiniLM-L6-v2`.
-
-## No-Database Demo
-
-The committed sample output can be queried without Postgres, OpenAI, or the full dataset:
-
-```bash
-.venv/bin/cartsy-dedupe search "wella" --run outputs/sample --backend artifacts --limit 5
-.venv/bin/cartsy-dedupe group prod_da4b9237bacc --run outputs/sample
-```
-
-Sample full-run summary snapshot:
-
-```text
-input_records=246,969
-candidate_pairs_scored=3,161,740
-candidate_pairs_kept=145,170
-merged_pairs=5,044
-final_unique_products=245,434
-duplicate_records_grouped=1,535
-```
 
 ## Run The Pipeline
 
@@ -110,7 +88,7 @@ Useful endpoints include `/health`, `/runs`, `/runs/{run_id}/summary`, `/runs/{r
 
 ## Architecture Overview
 
-The pipeline follows a conservative entity-resolution shape:
+See `PIPELINE.md` for the full dedupe pipeline details.
 
 ![Cartsy runtime dedupe pipeline](diagrams/dedupe-pipeline.svg)
 
@@ -141,7 +119,7 @@ Two products are treated as the same purchasable item only when enough independe
 
 ## Training
 
-See `TRAINING.md` for the full training pipeline. The committed final model was trained with controlled positive augmentation, dirty-identifier hard negatives, embeddings, calibration, threshold curves, false-positive/false-negative exports, feature coefficients, and risky-cluster diagnostics.
+See `TRAINING.md` for the full training pipeline details. The committed final model was trained with controlled positive augmentation, dirty-identifier hard negatives, embeddings, calibration, threshold curves, false-positive/false-negative exports, feature coefficients, and risky-cluster diagnostics.
 
 ![Cartsy supervised training pipeline](diagrams/training-pipeline.svg)
 
@@ -168,6 +146,8 @@ The tests cover normalization, rule scoring, pairwise features, clustering, cach
 
 ## What I Would Improve Next
 
+- Enhance accuracy by iterating on supervised training with more labeled pairs, harder negatives, and threshold calibration on held-out folds.
+- Compare or combine other classifiers beyond logistic regression (for example XGBoost) on the same pairwise feature matrix and calibration gates.
 - Add a small reviewer web UI for low-confidence merges and near misses.
 - Add source-specific trust profiles so retailer SKU, marketplace URLs, and third-party catalog IDs can be weighted by source quality.
 - Add active-learning loops from false positives/false negatives back into training data.
