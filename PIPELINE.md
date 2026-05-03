@@ -213,6 +213,9 @@ and slice metrics for retrieval layers such as `risk:vector_only`,
 `risk:generic_brand`, `evidence:exact`, `evidence:lexical`, `evidence:trigram`,
 and `evidence:vector`. Blank `deduped_id` values are ignored by default because
 they can otherwise create a single giant false-positive ground-truth cluster.
+Use `--min-precision`, `--min-recall`, and `--min-vector-only-precision` when
+the evaluation should act as a release gate; the CLI exits non-zero if any
+requested floor fails.
 
 ## 8. Retrieval Defaults
 

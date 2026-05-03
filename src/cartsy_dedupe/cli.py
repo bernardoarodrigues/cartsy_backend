@@ -172,6 +172,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Treat blank deduped_id values as a real label. Off by default to avoid accidental giant blank clusters.",
     )
+    evaluate.add_argument("--min-precision", type=float, default=None, help="Fail if overall labeled precision is below this floor.")
+    evaluate.add_argument("--min-recall", type=float, default=None, help="Fail if overall labeled recall is below this floor.")
+    evaluate.add_argument(
+        "--min-vector-only-precision",
+        type=float,
+        default=None,
+        help="Fail if vector-only labeled precision is below this floor.",
+    )
 
     return parser
 
@@ -341,9 +349,12 @@ def main(argv: list[str] | None = None) -> int:
             ground_truth_path=args.ground_truth,
             output_path=output_path,
             include_blank_labels=args.include_blank_labels,
+            min_precision=args.min_precision,
+            min_recall=args.min_recall,
+            min_vector_only_precision=args.min_vector_only_precision,
         )
         print(json.dumps(report, indent=2, ensure_ascii=False))
-        return 0
+        return 0 if report.get("acceptance", {}).get("passed", True) else 1
 
     parser.error(f"Unknown command: {args.command}")
     return 2

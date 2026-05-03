@@ -107,6 +107,28 @@ def test_evaluate_run_against_truth_reports_overall_and_risky_slices(tmp_path: P
     assert report["slices"]["risk:vector_only"]["fp"] == 1
     assert report["slices"]["risk:generic_brand"]["fp"] == 1
     assert report["false_positive_reasons"]["decision_reason:ml_score_above_threshold"] == 1
+    assert report["acceptance"]["passed"] is True
+
+
+def test_evaluate_run_acceptance_checks_fail_when_precision_is_low(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    truth_path = tmp_path / "truth.csv"
+    write_run_pairs(run_dir)
+    write_truth(truth_path)
+
+    report = evaluate_run_against_truth(
+        run_dir=run_dir,
+        ground_truth_path=truth_path,
+        min_precision=0.90,
+        min_recall=0.90,
+        min_vector_only_precision=0.50,
+    )
+
+    checks = {check["name"]: check for check in report["acceptance"]["checks"]}
+    assert report["acceptance"]["passed"] is False
+    assert checks["overall.precision"]["passed"] is False
+    assert checks["overall.recall"]["passed"] is True
+    assert checks["risk:vector_only.precision"]["passed"] is False
 
 
 def test_evaluate_run_cli_writes_default_report(tmp_path: Path, capsys) -> None:
@@ -124,3 +146,26 @@ def test_evaluate_run_cli_writes_default_report(tmp_path: Path, capsys) -> None:
     assert payload["overall"]["fp"] == 1
     printed = json.loads(capsys.readouterr().out)
     assert printed["overall"]["tp"] == 1
+
+
+def test_evaluate_run_cli_returns_nonzero_when_acceptance_fails(tmp_path: Path, capsys) -> None:
+    run_dir = tmp_path / "run"
+    truth_path = tmp_path / "truth.csv"
+    write_run_pairs(run_dir)
+    write_truth(truth_path)
+
+    result = main(
+        [
+            "evaluate-run",
+            "--run",
+            str(run_dir),
+            "--ground-truth",
+            str(truth_path),
+            "--min-precision",
+            "0.90",
+        ]
+    )
+
+    assert result == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["acceptance"]["passed"] is False

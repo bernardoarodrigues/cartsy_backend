@@ -88,6 +88,8 @@ Evaluate completed runs against labels before trusting a model:
 
 This writes `labeled_evaluation.json` in the run directory with overall precision/recall plus risky slices such as vector-only and generic-brand candidate pairs. Blank `deduped_id` labels are ignored by default so accidental empty-label clusters do not inflate positives.
 
+For release checks, add floors such as `--min-precision 0.97 --min-recall 0.80 --min-vector-only-precision 0.95`; the command exits non-zero when any requested acceptance check fails.
+
 ## Outputs
 
 Each run writes:

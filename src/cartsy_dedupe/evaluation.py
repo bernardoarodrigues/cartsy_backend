@@ -15,6 +15,9 @@ def evaluate_run_against_truth(
     ground_truth_path: str | Path,
     output_path: str | Path | None = None,
     include_blank_labels: bool = False,
+    min_precision: float | None = None,
+    min_recall: float | None = None,
+    min_vector_only_precision: float | None = None,
 ) -> dict[str, object]:
     """Evaluate completed run candidate decisions against labeled source IDs.
 
@@ -52,6 +55,13 @@ def evaluate_run_against_truth(
         elif expected_merge and not predicted_merge:
             false_negative_reasons.update(reason_labels(pair))
 
+    slice_metrics = {
+        name: confusion.to_metrics()
+        for name, confusion in sorted(
+            slices.items(),
+            key=lambda item: (-item[1].total, item[0]),
+        )
+    }
     report = {
         "run_dir": str(run_dir),
         "ground_truth_path": str(ground_truth_path),
@@ -61,21 +71,68 @@ def evaluate_run_against_truth(
         "labeled_candidate_pairs": overall.total,
         "unlabeled_candidate_pairs": unlabeled_pairs,
         "overall": overall.to_metrics(),
-        "slices": {
-            name: confusion.to_metrics()
-            for name, confusion in sorted(
-                slices.items(),
-                key=lambda item: (-item[1].total, item[0]),
-            )
-        },
+        "slices": slice_metrics,
         "false_positive_reasons": dict(false_positive_reasons.most_common(30)),
         "false_negative_reasons": dict(false_negative_reasons.most_common(30)),
     }
+    report["acceptance"] = acceptance_report(
+        overall=report["overall"],
+        slices=slice_metrics,
+        min_precision=min_precision,
+        min_recall=min_recall,
+        min_vector_only_precision=min_vector_only_precision,
+    )
     if output_path is not None:
         resolved_output = Path(output_path)
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         resolved_output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return report
+
+
+def acceptance_report(
+    *,
+    overall: dict[str, object],
+    slices: dict[str, dict[str, object]],
+    min_precision: float | None,
+    min_recall: float | None,
+    min_vector_only_precision: float | None,
+) -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+    if min_precision is not None:
+        checks.append(metric_check("overall.precision", overall.get("precision"), min_precision))
+    if min_recall is not None:
+        checks.append(metric_check("overall.recall", overall.get("recall"), min_recall))
+    if min_vector_only_precision is not None:
+        vector_metrics = slices.get("risk:vector_only")
+        checks.append(
+            metric_check(
+                "risk:vector_only.precision",
+                None if vector_metrics is None else vector_metrics.get("precision"),
+                min_vector_only_precision,
+                missing_passes=vector_metrics is None,
+            )
+        )
+    return {
+        "passed": all(bool(check["passed"]) for check in checks),
+        "checks": checks,
+    }
+
+
+def metric_check(
+    name: str,
+    value: object,
+    threshold: float,
+    *,
+    missing_passes: bool = False,
+) -> dict[str, object]:
+    numeric_value = coerce_optional_float(value)
+    passed = missing_passes if numeric_value is None else numeric_value >= threshold
+    return {
+        "name": name,
+        "value": numeric_value,
+        "threshold": threshold,
+        "passed": passed,
+    }
 
 
 class Confusion:
@@ -190,3 +247,12 @@ def safe_div(numerator: float, denominator: float) -> float | None:
     if denominator == 0:
         return None
     return numerator / denominator
+
+
+def coerce_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
