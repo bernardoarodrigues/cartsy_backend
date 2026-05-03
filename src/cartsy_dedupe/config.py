@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class PipelineConfig:
     merge_threshold: float = 0.84
     ml_model_path: str | None = None
+    evidence_merge_threshold: float = 0.70
     near_miss_threshold: float = 0.70
     max_block_size: int | None = 500
     max_candidate_pairs: int | None = 500_000

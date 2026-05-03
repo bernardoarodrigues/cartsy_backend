@@ -70,6 +70,7 @@ Set `CARTSY_ML_MODEL_PATH=models/cartsy_logreg.joblib` in `.env`, or pass `--ml-
   --output outputs \
   --ml-model models/cartsy_logreg.joblib \
   --merge-threshold 0.84 \
+  --evidence-merge-threshold 0.70 \
   --near-miss-threshold 0.70
 ```
 
@@ -91,7 +92,7 @@ summary_report.json
 ```
 
 `summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, embedding usage/cost estimates when using OpenAI, and per-stage cache paths for debugging. Product embedding caching is available to avoid recomputing embeddings for unchanged products across repeated runs.
-Pair artifacts separate `ml_score`, `evidence_score`, `decision_threshold`, and `decision_reason`; `score` is the evidence confidence used for display and cluster confidence, not a policy-clamped copy of the model threshold.
+Pair artifacts separate `ml_score`, `evidence_score`, `decision_threshold`, and `decision_reason`; `score` is the evidence confidence used for display and cluster confidence, not a policy-clamped copy of the model threshold. Non-rule ML merges require both `ml_score >= decision_threshold` and `evidence_score >= --evidence-merge-threshold`, which prevents sparse vector-only candidates from merging solely because the model is overconfident.
 
 ## Query Completed Runs
 

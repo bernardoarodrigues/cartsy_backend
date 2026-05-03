@@ -31,6 +31,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--merge-threshold", type=float, default=0.84)
     run.add_argument(
+        "--evidence-merge-threshold",
+        type=float,
+        default=PipelineConfig.evidence_merge_threshold,
+        help=(
+            "Minimum continuous evidence score required for non-rule ML merges "
+            f"(default: {PipelineConfig.evidence_merge_threshold:.2f})."
+        ),
+    )
+    run.add_argument(
         "--ml-model",
         default=os.getenv("CARTSY_ML_MODEL_PATH"),
         help="Path to a cartsy_logreg.joblib bundle from `cartsy-dedupe train-model`.",
@@ -160,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         config = PipelineConfig(
             merge_threshold=args.merge_threshold,
             ml_model_path=args.ml_model,
+            evidence_merge_threshold=args.evidence_merge_threshold,
             near_miss_threshold=args.near_miss_threshold,
             max_block_size=args.max_block_size,
             max_candidate_pairs=args.max_candidate_pairs,

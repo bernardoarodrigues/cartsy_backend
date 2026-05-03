@@ -1176,7 +1176,7 @@ class DedupePipeline:
                 decision = "merge"
                 decision_reason = f"strong_policy:{strong_policy_reason}"
             else:
-                relation = "exact_match"
+                relation = "candidate_match"
                 if hard_contradiction:
                     relation = "same_parent_different_variant"
                     decision_reason = "hard_contradiction"
@@ -1186,9 +1186,20 @@ class DedupePipeline:
                 elif ml_score < config.near_miss_threshold:
                     relation = "no_match"
                     decision_reason = "below_near_miss_threshold"
+                elif evidence_score < config.evidence_merge_threshold:
+                    relation = "similar_related_product"
+                    decision_reason = "below_evidence_threshold"
                 else:
                     decision_reason = "ml_score_above_threshold"
-                decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
+                decision = (
+                    "merge"
+                    if (
+                        not hard_contradiction
+                        and ml_score >= threshold
+                        and evidence_score >= config.evidence_merge_threshold
+                    )
+                    else "no_merge"
+                )
             if hard_contradiction:
                 relation = "same_parent_different_variant"
                 decision_reason = "hard_contradiction"
@@ -1202,6 +1213,7 @@ class DedupePipeline:
             f"ml_score:{ml_score:.2f}",
             f"evidence_score:{evidence_score:.2f}",
             f"ml_threshold:{threshold:.2f}",
+            f"evidence_threshold:{config.evidence_merge_threshold:.2f}",
             f"exact:{retrieval['exact']:.2f}",
             f"fts:{retrieval['lexical']:.2f}",
             f"trigram:{retrieval['trigram']:.2f}",
@@ -1220,6 +1232,7 @@ class DedupePipeline:
             "ml_score": ml_score,
             "evidence_score": evidence_score,
             "ml_threshold": threshold,
+            "evidence_merge_threshold": config.evidence_merge_threshold,
             "hard_contradiction": hard_contradiction_val,
         }
         feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})

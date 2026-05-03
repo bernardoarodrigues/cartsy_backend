@@ -117,6 +117,7 @@ For pairs that reach the ML model:
 rule_decision = evaluate_rule(left, right)
 pair_features = build_pair_features(..., rule_decision=rule_decision)
 ml_score = calibrated_logistic_regression.predict_proba(pair_features)
+evidence_score = pair_evidence_score(...)
 
 if rule_decision.certainty == CERTAIN_MATCH:
     decision = "merge"                          # bypass ML
@@ -124,7 +125,7 @@ elif rule_decision.certainty == CERTAIN_BLOCK:
     decision = "no_merge"                       # bypass ML
 elif hard_contradiction_features(pair_features):
     decision = "no_merge"                       # ML called, but score capped
-elif ml_score >= threshold:
+elif ml_score >= threshold and evidence_score >= evidence_merge_threshold:
     decision = "merge"
 else:
     decision = "no_merge"
@@ -132,7 +133,9 @@ else:
 
 Canonical URLs are trusted only when they look like product pages; click/count/redirect/tracking paths are filtered by `canonicalize_url` before insertion into the exact-key table.
 
-Trade-off: deterministic certainty conditions handle the obvious cases without ML inference overhead. The calibrated logistic regression remains the decision surface for everything in between, with interpretable rule indicator features rather than a single blended score float.
+`evidence_merge_threshold` defaults to `0.70`. This is a runtime safety gate for sparse candidate pairs, especially vector-only pairs: the model can still score them, but a high `ml_score` alone is not enough to create a merge edge when independent evidence is weak.
+
+Trade-off: deterministic certainty conditions handle the obvious cases without ML inference overhead. The calibrated logistic regression remains the probability surface for everything in between, but uncertain pairs also need enough corroborating evidence before they can affect clustering.
 
 ## 6. Cluster Accepted Merge Edges
 
@@ -240,6 +243,8 @@ concepts:
   lexical/trigram evidence, semantic similarity, rule features, and model score.
 - `decision_threshold`: model threshold loaded from the bundle after applying
   the runtime floor.
+- `evidence_merge_threshold`: runtime evidence floor required for non-rule ML
+  merges.
 - `decision_reason`: the final merge/no-merge policy reason.
 - `score`: the display confidence, currently equal to `evidence_score`.
 

@@ -407,6 +407,84 @@ def test_score_postgres_pair_does_not_promote_brand_title_without_exact_sku() ->
     assert "strong_policy:" not in pair.explanation
 
 
+def test_score_postgres_pair_blocks_weak_vector_only_ml_merge() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.96),
+        "feature_columns": [
+            "brand_exact",
+            "title_token_set",
+            "semantic_sim",
+            "size_conflict",
+            "retrieval_layer_count",
+        ],
+        "threshold": 0.84,
+    }
+    left = _product(
+        id="18454",
+        brand="genérico",
+        sku="B0FGGLCTPS",
+        prod_name="Máquina Profissional Dragão Barbeador Acabamento Sem Fio Cabelo Barba Pezinho",
+        price="2590",
+        dimension="",
+    )
+    right = _product(
+        id="84515",
+        brand="Mega",
+        retailer="epoca_cosmeticos",
+        sku="",
+        prod_name="Máquina de Corte Mega Fire I USB-C Bivolt AT61000",
+        price="36890",
+        dimension="",
+    )
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"vector:cosine:0.7806"},
+        PipelineConfig(merge_threshold=0.84, evidence_merge_threshold=0.70),
+        semantic_sim=0.7806,
+    )
+
+    assert pair.decision == "no_merge"
+    assert pair.ml_score == 0.96
+    assert pair.evidence_score < 0.70
+    assert pair.decision_reason == "below_evidence_threshold"
+    assert "relation:similar_related_product" in pair.explanation
+    assert "evidence_threshold:0.70" in pair.explanation
+
+
+def test_score_postgres_pair_allows_ml_merge_with_corroborated_evidence() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.96),
+        "feature_columns": [
+            "brand_exact",
+            "title_token_set",
+            "semantic_sim",
+            "size_conflict",
+            "retrieval_layer_count",
+        ],
+        "threshold": 0.84,
+    }
+    left = _product(id="1", sku="SKU-1")
+    right = _product(id="2", retailer="other_shop", sku="SKU-2", price="6990")
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"lexical:fts:0.7143", "trigram:title:1.0000", "vector:cosine:0.9600"},
+        PipelineConfig(merge_threshold=0.84, evidence_merge_threshold=0.70),
+        semantic_sim=0.96,
+    )
+
+    assert pair.decision == "merge"
+    assert pair.ml_score == 0.96
+    assert pair.evidence_score >= 0.70
+    assert pair.decision_reason == "ml_score_above_threshold"
+    assert "relation:candidate_match" in pair.explanation
+
+
 def test_cli_merge_threshold_is_runtime_floor_for_model_threshold() -> None:
     pipeline = DedupePipeline()
     pipeline.ml_model_bundle = {"threshold": 0.62}
