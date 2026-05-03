@@ -1,0 +1,128 @@
+digraph DedupePipeline {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    pad="0.35",
+    nodesep="0.55",
+    ranksep="0.7",
+    fontname="Helvetica",
+    labelloc="t",
+    label="Cartsy Dedupe Pipeline - Main Runtime Parts"
+  ];
+
+  node [
+    shape=rect,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=12,
+    color="#3b4252",
+    penwidth=1.4,
+    margin="0.14,0.10"
+  ];
+
+  edge [
+    fontname="Helvetica",
+    fontsize=10,
+    color="#4c566a",
+    arrowsize=0.8,
+    penwidth=1.2
+  ];
+
+  input [
+    label="Product CSV\ncartsy-dedupe run",
+    fillcolor="#eaf2ff"
+  ];
+
+  normalize [
+    label="1. Ingest + Normalize\ncanonical fields, IDs,\nsize, pack, model tokens,\nquality flags",
+    fillcolor="#eef7ed"
+  ];
+
+  postgres [
+    label="Postgres Load\nnormalized products,\nexact-key tables,\nretrieval helper tables",
+    fillcolor="#f3efff"
+  ];
+
+  candidates [
+    label="2. Candidate Retrieval\nexact keys + FTS + trigram +\ngated pgvector search",
+    fillcolor="#fff4df"
+  ];
+
+  semantic [
+    label="3. Dense Semantic Similarity\nembed candidate-pair products,\ncompute pairwise cosine",
+    fillcolor="#fceff5"
+  ];
+
+  features [
+    label="4. Pairwise ML Features\nDEFAULT_FEATURE_COLUMNS\nretrieval, lexical, semantic,\nidentifier, price, variant signals",
+    fillcolor="#edf7f7"
+  ];
+
+  rules [
+    label="5. Rule Evaluation\nCERTAIN_BLOCK / CERTAIN_MATCH /\nSTRONG / LIKELY / UNCERTAIN",
+    fillcolor="#fff0ec"
+  ];
+
+  decision [
+    label="Merge Decision\nbypass obvious exact/block cases;\notherwise calibrated logistic\nregression threshold",
+    shape=diamond,
+    width=2.25,
+    height=1.45,
+    fillcolor="#ffe8cc"
+  ];
+
+  clustering [
+    label="6. Cluster Accepted Edges\nunion connected components\nwith cluster-level guards",
+    fillcolor="#edf1ff"
+  ];
+
+  artifacts [
+    label="10. Run Artifacts\nnormalized_products.parquet\ncandidate_pairs.parquet\nproduct_assignments.csv\ndedupe_groups.jsonl\nnear_miss_pairs.csv\nsummary_report.json",
+    fillcolor="#f7f7f7"
+  ];
+
+  api [
+    label="Artifact API\ncartsy-dedupe serve\nread-only completed-run access",
+    fillcolor="#f2f2f2"
+  ];
+
+  training [
+    label="7. Training + Evaluation\naugmented data, calibrated threshold,\ncurves, coefficients, FP/FN,\nrisky clusters",
+    fillcolor="#e8f7ff"
+  ];
+
+  cache [
+    label="9. Caching Policy\nstage caches + per-layer retrieval\ncache + product embedding cache",
+    shape=folder,
+    fillcolor="#eef0f2"
+  ];
+
+  config [
+    label="Runtime Config\n.env, DATABASE_URL,\nembedding model, fanout,\nML model path, cache toggles",
+    shape=note,
+    fillcolor="#f8f0ff"
+  ];
+
+  input -> normalize;
+  normalize -> postgres;
+  postgres -> candidates;
+  candidates -> semantic [label="candidate pairs"];
+  semantic -> features [label="semantic_sim"];
+  candidates -> features [label="retrieval evidence"];
+  features -> rules;
+  rules -> decision;
+  decision -> clustering [label="merge edges"];
+  clustering -> artifacts;
+  artifacts -> api;
+
+  training -> decision [label="model bundle + threshold", style=dashed];
+  config -> normalize [style=dashed];
+  config -> candidates [style=dashed];
+  config -> semantic [style=dashed];
+  config -> decision [style=dashed];
+  cache -> normalize [style=dotted];
+  cache -> candidates [style=dotted];
+  cache -> semantic [style=dotted];
+  cache -> features [style=dotted];
+  cache -> clustering [style=dotted];
+}

@@ -7,14 +7,18 @@ from cartsy_dedupe.utils.pipeline_cache import (
     candidate_pairs_from_records,
     candidate_pairs_to_records,
     clustering_cache_key,
+    embedding_cache_enabled,
     pair_blocks_from_records,
     pair_blocks_to_records,
     product_signature,
+    read_cache_payload,
     retrieval_layer_cache_key,
     retrieval_rows_from_records,
     retrieval_rows_to_records,
     retrieval_cache_key,
     scoring_cache_key,
+    stage_cache_enabled,
+    write_cache_payload,
 )
 
 
@@ -154,3 +158,28 @@ def test_downstream_stage_keys_chain_from_parent_stage() -> None:
         code={"clustering.py": "333"},
     )
     assert CACHE_SCHEMA_VERSION >= 2
+
+
+def test_stage_cache_toggle_controls_payload_reads_and_writes(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "stage.json"
+    monkeypatch.setenv("CARTSY_STAGE_CACHE_ENABLED", "false")
+
+    write_cache_payload(path, metadata={"stage": "x"}, payload={"value": 1})
+
+    assert stage_cache_enabled() is False
+    assert not path.exists()
+    assert read_cache_payload(path) is None
+
+    monkeypatch.setenv("CARTSY_STAGE_CACHE_ENABLED", "true")
+    write_cache_payload(path, metadata={"stage": "x"}, payload={"value": 1})
+
+    assert stage_cache_enabled() is True
+    assert read_cache_payload(path) == {"value": 1}
+
+
+def test_embedding_cache_toggle_defaults_on(monkeypatch) -> None:
+    monkeypatch.delenv("CARTSY_EMBEDDING_CACHE_ENABLED", raising=False)
+    assert embedding_cache_enabled() is True
+
+    monkeypatch.setenv("CARTSY_EMBEDDING_CACHE_ENABLED", "0")
+    assert embedding_cache_enabled() is False

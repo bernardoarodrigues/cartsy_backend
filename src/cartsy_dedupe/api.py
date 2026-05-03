@@ -43,6 +43,99 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
     def health() -> dict[str, object]:
         return {"ok": True, "runs_root": str(root)}
 
+    @app.get("/models")
+    def list_models() -> dict[str, object]:
+        models = []
+        if models_dir.exists():
+            for model_subdir in sorted(models_dir.iterdir(), reverse=True):
+                if not model_subdir.is_dir():
+                    continue
+                metrics_path = model_subdir / "metrics.json"
+                if not metrics_path.exists():
+                    continue
+                try:
+                    m = json.loads(metrics_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                models.append(
+                    {
+                        "model_id": model_subdir.name,
+                        "path": str(model_subdir),
+                        "train_pairs": m.get("train_pairs"),
+                        "test_pairs": m.get("test_pairs"),
+                        "test_f1": m.get("test_f1"),
+                        "test_precision": m.get("test_precision"),
+                        "test_recall": m.get("test_recall"),
+                        "threshold": m.get("threshold"),
+                        "created_at": None,
+                    }
+                )
+        return {"models": models}
+
+    @app.get("/models/{model_id}")
+    def get_model_by_id(model_id: str) -> dict[str, object]:
+        model_subdir = models_dir / model_id
+        if not model_subdir.exists() or not model_subdir.is_dir():
+            raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
+        metrics_path = model_subdir / "metrics.json"
+        if not metrics_path.exists():
+            raise HTTPException(status_code=404, detail=f"No metrics.json found for model: {model_id}")
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+
+        coefficients: list[dict[str, object]] = []
+        coeff_path = model_subdir / "feature_coefficients.csv"
+        if coeff_path.exists():
+            lines = coeff_path.read_text(encoding="utf-8").strip().splitlines()
+            for line in lines[1:]:
+                parts = line.split(",", 1)
+                if len(parts) == 2:
+                    try:
+                        coefficients.append({"feature": parts[0], "coefficient": float(parts[1])})
+                    except ValueError:
+                        pass
+
+        threshold_curve: list[dict[str, object]] = []
+        curve_path = model_subdir / "threshold_curve.csv"
+        if curve_path.exists():
+            lines = curve_path.read_text(encoding="utf-8").strip().splitlines()
+            headers = lines[0].split(",")
+            for line in lines[1:]:
+                parts = line.split(",")
+                if len(parts) == len(headers):
+                    try:
+                        threshold_curve.append({h: float(v) for h, v in zip(headers, parts)})
+                    except ValueError:
+                        pass
+
+        fp_count = 0
+        fn_count = 0
+        fp_path = model_subdir / "false_positives.csv"
+        fn_path = model_subdir / "false_negatives.csv"
+        if fp_path.exists():
+            fp_count = max(0, len(fp_path.read_text(encoding="utf-8").strip().splitlines()) - 1)
+        if fn_path.exists():
+            fn_count = max(0, len(fn_path.read_text(encoding="utf-8").strip().splitlines()) - 1)
+
+        risky_clusters: list[dict[str, object]] = []
+        risky_path = model_subdir / "top_risky_clusters.csv"
+        if risky_path.exists():
+            lines = risky_path.read_text(encoding="utf-8").strip().splitlines()
+            if len(lines) > 1:
+                headers = lines[0].split(",")
+                for line in lines[1:]:
+                    parts = line.split(",", len(headers) - 1)
+                    if len(parts) == len(headers):
+                        risky_clusters.append(dict(zip(headers, parts)))
+
+        return {
+            "metrics": metrics,
+            "feature_coefficients": coefficients,
+            "threshold_curve": threshold_curve,
+            "false_positive_count": fp_count,
+            "false_negative_count": fn_count,
+            "top_risky_clusters": risky_clusters,
+        }
+
     @app.get("/model")
     def get_model_info() -> dict[str, object]:
         metrics_path = models_dir / "metrics.json"
@@ -115,6 +208,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
                 runs.append(
                     {
                         "run_id": summary.get("run_id", run_dir.name),
+                        "model_id": summary.get("model_id"),
                         "path": str(run_dir),
                         "input_records": summary.get("input_records"),
                         "final_unique_products": summary.get("final_unique_products"),

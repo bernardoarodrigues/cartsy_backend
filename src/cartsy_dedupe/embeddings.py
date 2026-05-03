@@ -34,14 +34,14 @@ def configured_embedding_model(provider: str | None = None, model: str | None = 
 
 
 def configured_embedding_dimensions(provider: str | None = None, model: str | None = None) -> int:
-    if os.getenv("CARTSY_EMBEDDING_DIMENSIONS"):
-        return int(os.environ["CARTSY_EMBEDDING_DIMENSIONS"])
     resolved_provider = provider or embedding_provider_name()
     resolved_model = configured_embedding_model(resolved_provider, model)
     if resolved_provider == "openai":
         if resolved_model == "text-embedding-3-large":
             return 3072
         return 1536
+    if os.getenv("CARTSY_EMBEDDING_DIMENSIONS"):
+        return int(os.environ["CARTSY_EMBEDDING_DIMENSIONS"])
     if resolved_provider == "sentence-transformers":
         if resolved_model.endswith("all-MiniLM-L6-v2"):
             return 384

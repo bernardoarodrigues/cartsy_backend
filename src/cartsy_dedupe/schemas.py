@@ -49,12 +49,20 @@ class CandidatePair:
     explanation: str
     blocking_keys: tuple[str, ...]
     feature_scores: dict[str, float]
+    ml_score: float = 0.0
+    evidence_score: float = 0.0
+    decision_threshold: float = 0.0
+    decision_reason: str = ""
 
     def to_record(self) -> dict[str, object]:
         return {
             "product_a_id": self.product_a_id,
             "product_b_id": self.product_b_id,
             "score": round(self.score, 4),
+            "ml_score": round(self.ml_score, 4),
+            "evidence_score": round(self.evidence_score, 4),
+            "decision_threshold": round(self.decision_threshold, 4),
+            "decision_reason": self.decision_reason,
             "decision": self.decision,
             "explanation": self.explanation,
             "blocking_keys": "|".join(self.blocking_keys),

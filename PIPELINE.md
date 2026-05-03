@@ -2,6 +2,31 @@
 
 This is the production path implemented in `src/cartsy_dedupe/pipeline.py`.
 
+## Tech Stack
+
+The pipeline is a Python application with a CLI-first runtime and an optional API surface:
+
+- Python package: `cartsy-dedupe`, installed from `pyproject.toml`, exposes the `cartsy-dedupe` CLI.
+- Dataframe and numeric layer: Polars loads/writes tabular artifacts, NumPy handles vector math, RapidFuzz computes string similarity, and scikit-learn/joblib run the calibrated logistic-regression model bundle.
+- Postgres: normalized products, retrieval helper tables, exact-key tables, and embedding vectors are loaded into a relational database for repeatable candidate generation.
+- pgvector: stores product embedding vectors and supports cosine vector retrieval in the candidate cascade.
+- `pg_trgm`: powers trigram title similarity for fuzzy lexical retrieval inside normalized brand blocks.
+- `unaccent` and Postgres FTS: normalize and rank text search over brand, title, category, specs, and description.
+- OpenAI API: creates product text embeddings with `text-embedding-3-small` by default and can run structured attribute extraction when the extraction path is enabled.
+- Local cache files: JSON stage caches and embedding caches under `.cache/cartsy-dedupe` avoid recomputing unchanged normalization, retrieval, scoring, clustering, and embedding work.
+- FastAPI and Uvicorn: serve completed run artifacts through `cartsy-dedupe serve`; they do not replace the batch pipeline.
+- Docker Compose: runs the production-like local Postgres service from `pgvector/pgvector:pg16` and can also run the read-only artifact API container.
+
+Required Postgres extensions are initialized from `sql/001_extensions.sql`:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
+```
+
+The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles.
+
 ## 1. Ingest And Normalize
 
 `cartsy-dedupe run` reads the product CSV, normalizes every row, and loads the normalized products into Postgres. Normalization extracts stable deterministic signals:
@@ -117,22 +142,48 @@ Trade-off: the model scores pairs, while clustering handles group construction. 
 
 ## 7. Training And Evaluation
 
-Training should use the augmented dataset:
+Training should use the merged 68k labels plus controlled augmentation. The file
+`data/ground_truth_merged.csv` has many labeled rows, but most are singletons;
+on the current local copy it contains only 203 duplicate groups and 1,026
+all-pairs positives. That is not enough positive mass for a stable pair scorer
+by itself.
+
+```bash
+cartsy-dedupe augment-training-data \
+  --input data/products.csv \
+  --ground-truth data/ground_truth_merged.csv \
+  --output-data data/dataset_merged_augmented.csv \
+  --output-ground-truth data/ground_truth_merged_augmented.csv \
+  --output-manifest data/augmentation_manifest_merged.csv \
+  --duplicate-samples 5000 \
+  --hard-negative-samples 1000
+```
 
 ```bash
 cartsy-dedupe train-model \
-  --products data/dataset_v1_augmented.csv \
-  --ground-truth data/ground_truth_v1_augmented.csv \
+  --products data/dataset_merged_augmented.csv \
+  --ground-truth data/ground_truth_merged_augmented.csv \
   --output-dir models \
+  --target-precision 0.97 \
+  --min-recall 0.50 \
   --cv-folds 5 \
-  --max-positive-pairs 10000 \
-  --max-hard-negative-pairs 30000 \
+  --max-positive-pairs 20000 \
+  --max-hard-negative-pairs 60000 \
   --use-embeddings
 ```
 
-`--target-precision` is accepted for backward compatibility but no longer drives threshold selection.
+`--target-precision` drives threshold selection. The trainer chooses the best-F1
+threshold that satisfies the requested precision floor; if no threshold reaches
+the floor, it falls back to the highest-precision threshold available. When two
+thresholds have the same precision/recall/F1, the lower threshold wins so a flat
+calibrated plateau does not turn into an unnecessarily strict `0.99` cutoff.
+`--min-recall` protects against the worse failure mode: a threshold that meets
+the precision target by merging only a tiny number of positives. If no threshold
+meets both the precision floor and recall guard, the trainer uses the best-F1
+operating point and records `threshold_precision_floor_met: false` in
+`metrics.json`.
 
-**Threshold selection** uses the same score scale that runtime uses. The trainer still records stratified k-fold raw logistic thresholds (default 5 folds) as diagnostics, but when isotonic calibration is available the saved merge threshold is selected from calibrated held-out probabilities. A separate held-out calibration split (≈15% of data) is used for `CalibratedClassifierCV`, which makes `P(merge)` values reliable probabilities rather than raw logit-derived scores on imbalanced data. For small datasets the function automatically falls back to a simpler 70/30 split.
+**Threshold selection** uses the same score scale that runtime uses. The trainer still records stratified k-fold raw logistic thresholds (default 5 folds) as diagnostics, but when isotonic calibration is available the saved merge threshold is selected from calibrated held-out probabilities with `--target-precision` as a precision floor. A separate held-out calibration split (≈15% of data) is used for `CalibratedClassifierCV`, which makes `P(merge)` values reliable probabilities rather than raw logit-derived scores on imbalanced data. For small datasets the function automatically falls back to a simpler 70/30 split.
 
 Synthetic augmentation creates two high-value patterns:
 
@@ -160,11 +211,15 @@ Trade-off: this creates more candidates than the smoke-test profile, but candida
 
 ## 9. Caching Policy
 
-Full stage-level caching (reading/writing complete retrieval, scoring, and cluster results) is not implemented in the main run path. Each run recomputes all stages from scratch.
+Stage-level caching is enabled by default in the main run path. Normalization, retrieval, scoring, and clustering write JSON cache files under `CARTSY_PIPELINE_CACHE_DIR` (default `.cache/cartsy-dedupe`) and reuse them when the input, config, environment, and code fingerprints match.
 
-Per-layer retrieval caching is available inside `load_or_fetch_retrieval_rows`. Pass `retrieval_env` and `retrieval_code` to `generate_candidate_pairs` to enable it; by default these are `None` and the layer cache is skipped.
+Set `CARTSY_STAGE_CACHE_ENABLED=false` to force stage recomputation. `summary_report.json` includes `stage_caches` with each cache key, path, enabled flag, and hit status.
 
-Product embedding caching is active by default. It is keyed by product embedding text, model, dimensions, and code fingerprint, so embeddings are reused across repeated runs on the same products and save OpenAI API cost.
+Per-layer retrieval caching is also enabled when stage caching is enabled, so exact, FTS, trigram, and vector retrieval rows can be reused independently before the full retrieval-stage cache exists.
+
+Product embedding caching is active by default and can be controlled separately with `CARTSY_EMBEDDING_CACHE_ENABLED=false`. It is keyed by product embedding text, normalization key, model, dimensions, and code fingerprint, so embeddings are reused across repeated runs on the same products and save OpenAI API cost.
+
+Training runs with `--use-embeddings` also reuse product embedding caches. They first look for a matching dedupe embedding matrix cache (`embeddings_<normalization_key>_*.npy` plus `source_id_to_index.json`) for the same products file, then fall back to text-hash JSON embedding caches before creating any missing embeddings.
 
 ## 10. Run Artifacts
 
@@ -176,5 +231,20 @@ Each run writes:
 - `dedupe_groups.jsonl`
 - `near_miss_pairs.csv`
 - `summary_report.json`
+
+`candidate_pairs.parquet` and `near_miss_pairs.csv` expose separate score
+concepts:
+
+- `ml_score`: calibrated model probability for the pair.
+- `evidence_score`: human-facing multi-signal confidence from exact keys,
+  lexical/trigram evidence, semantic similarity, rule features, and model score.
+- `decision_threshold`: model threshold loaded from the bundle after applying
+  the runtime floor.
+- `decision_reason`: the final merge/no-merge policy reason.
+- `score`: the display confidence, currently equal to `evidence_score`.
+
+Accepted exact-policy merges can therefore have low `ml_score` but high
+`evidence_score`; that is intentional and keeps policy decisions explainable
+instead of flattening confidence to the model threshold.
 
 The durable artifact files are the source of truth for completed-run search, explanations, and API responses.

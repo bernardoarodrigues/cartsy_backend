@@ -20,6 +20,7 @@ def build_summary_report(
     duplicate_records_grouped = sum(int(cluster["num_offers"]) - 1 for cluster in clusters.values() if int(cluster["num_offers"]) > 1)
     quality_flags = Counter(flag for product in products for flag in product.quality_flags)
     confidence_values = [pair.score for pair in candidate_pairs]
+    ml_values = [pair.ml_score for pair in candidate_pairs]
 
     return {
         "input_records": len(products),
@@ -29,11 +30,13 @@ def build_summary_report(
         "merged_pairs": decisions.get("merge", 0),
         "near_miss_pairs": decisions.get("no_merge", 0),
         "threshold_sensitivity": threshold_sensitivity(candidate_pairs),
+        "ml_threshold_sensitivity": ml_threshold_sensitivity(candidate_pairs),
         "final_unique_products": len(clusters),
         "grouped_records": grouped_records,
         "duplicate_records_grouped": duplicate_records_grouped,
         "reduction_ratio": round(duplicate_records_grouped / len(products), 4) if products else 0.0,
         "confidence_distribution": confidence_distribution(confidence_values),
+        "ml_score_distribution": confidence_distribution(ml_values),
         "decision_reason_counts": decision_reason_counts(candidate_pairs),
         "top_quality_flags": dict(quality_flags.most_common(20)),
         "blocking": blocking_stats,
@@ -79,6 +82,15 @@ def threshold_sensitivity(candidate_pairs: list[CandidatePair]) -> dict[str, int
     }
 
 
+def ml_threshold_sensitivity(candidate_pairs: list[CandidatePair]) -> dict[str, int]:
+    """Show model-only merge counts at nearby thresholds."""
+    thresholds = [0.99, 0.97, 0.95, 0.90, 0.88, 0.86, 0.84, 0.82, 0.80, 0.78, 0.75, 0.70]
+    return {
+        f"{threshold:.2f}": sum(1 for pair in candidate_pairs if pair.ml_score >= threshold)
+        for threshold in thresholds
+    }
+
+
 def decision_reason_counts(candidate_pairs: list[CandidatePair]) -> dict[str, dict[str, int]]:
     counts: dict[str, Counter[str]] = {
         "merge": Counter(),
@@ -86,6 +98,8 @@ def decision_reason_counts(candidate_pairs: list[CandidatePair]) -> dict[str, di
     }
     for pair in candidate_pairs:
         bucket = counts.setdefault(pair.decision, Counter())
+        if pair.decision_reason:
+            bucket[f"decision_reason:{pair.decision_reason}"] += 1
         for part in pair.explanation.split("; "):
             if not part:
                 continue

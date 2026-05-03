@@ -7,10 +7,26 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from cartsy_dedupe.config import PipelineConfig
 from cartsy_dedupe.schemas import CandidatePair, NormalizedProduct
 
 CACHE_SCHEMA_VERSION = 3
+
+
+def stage_cache_enabled() -> bool:
+    raw = os.getenv("CARTSY_STAGE_CACHE_ENABLED")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def embedding_cache_enabled() -> bool:
+    raw = os.getenv("CARTSY_EMBEDDING_CACHE_ENABLED")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def pipeline_cache_root() -> Path:
@@ -174,6 +190,54 @@ def embedding_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def find_embedding_matrix_cache(
+    *,
+    normalization_key: str,
+    expected_dimensions: int,
+) -> tuple[Path, dict[str, int], np.ndarray] | None:
+    for matrix_cache in iter_embedding_matrix_caches(
+        expected_dimensions=expected_dimensions,
+        normalization_key=normalization_key,
+    ):
+        return matrix_cache
+    return None
+
+
+def iter_embedding_matrix_caches(
+    *,
+    expected_dimensions: int,
+    normalization_key: str | None = None,
+) -> list[tuple[Path, dict[str, int], np.ndarray]]:
+    cache_dir = embedding_cache_dir()
+    pattern = (
+        f"embeddings_{normalization_key}_*.source_id_to_index.json"
+        if normalization_key
+        else "embeddings_*.source_id_to_index.json"
+    )
+    candidates = sorted(
+        cache_dir.glob(pattern),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    caches: list[tuple[Path, dict[str, int], np.ndarray]] = []
+    for index_path in candidates:
+        matrix_path = index_path.with_name(index_path.name.removesuffix(".source_id_to_index.json") + ".npy")
+        if not matrix_path.exists():
+            continue
+        try:
+            source_id_to_index = {
+                str(source_id): int(index)
+                for source_id, index in json.loads(index_path.read_text(encoding="utf-8")).items()
+            }
+            matrix = np.load(matrix_path, mmap_mode="r")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if matrix.ndim != 2 or int(matrix.shape[1]) != expected_dimensions:
+            continue
+        caches.append((matrix_path, source_id_to_index, matrix))
+    return caches
+
+
 def product_signature(products: list[NormalizedProduct]) -> str:
     payload = [asdict(product) for product in products]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -275,6 +339,36 @@ def read_stage_cache(path: Path) -> dict[str, Any] | None:
     if metadata is not None and not isinstance(metadata, dict):
         return None
     return blob
+
+
+def stage_cache_status(path: Path, key: str, *, enabled: bool | None = None) -> dict[str, object]:
+    return {
+        "enabled": int(stage_cache_enabled() if enabled is None else enabled),
+        "used": 0,
+        "path": str(path),
+        "key": key,
+    }
+
+
+def read_cache_payload(path: Path, *, enabled: bool | None = None) -> dict[str, Any] | None:
+    if not (stage_cache_enabled() if enabled is None else enabled):
+        return None
+    blob = read_stage_cache(path)
+    if blob is None:
+        return None
+    return blob["payload"]
+
+
+def write_cache_payload(
+    path: Path,
+    *,
+    metadata: dict[str, Any],
+    payload: dict[str, Any],
+    enabled: bool | None = None,
+) -> None:
+    if not (stage_cache_enabled() if enabled is None else enabled):
+        return
+    write_stage_cache(path, metadata=metadata, payload=payload)
 
 
 def cached_product_from_record(record: dict[str, Any]) -> NormalizedProduct:

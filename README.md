@@ -19,20 +19,33 @@ Choose an embedding backend in `.env`: `CARTSY_EMBEDDING_PROVIDER=openai` uses O
 
 ## Train The Logistic Model
 
-Train from the augmented experiment dataset. The large augmented CSVs are local inputs and are intentionally ignored by git. Place your augmented dataset CSVs at `data/dataset_v1_augmented.csv` and `data/ground_truth_v1_augmented.csv` (or adjust the paths in the command below).
+Train from the merged 68k labels plus controlled augmentation. The 68k label file is still highly imbalanced, so augmentation should add guarded positive duplicates and a smaller set of dirty-identifier hard negatives rather than simply adding more singleton negatives.
+
+```bash
+.venv/bin/cartsy-dedupe augment-training-data \
+  --input data/products.csv \
+  --ground-truth data/ground_truth_merged.csv \
+  --output-data data/dataset_merged_augmented.csv \
+  --output-ground-truth data/ground_truth_merged_augmented.csv \
+  --output-manifest data/augmentation_manifest_merged.csv \
+  --duplicate-samples 5000 \
+  --hard-negative-samples 1000
+```
 
 ```bash
 .venv/bin/cartsy-dedupe train-model \
-  --products data/dataset_v1_augmented.csv \
-  --ground-truth data/ground_truth_v1_augmented.csv \
+  --products data/dataset_merged_augmented.csv \
+  --ground-truth data/ground_truth_merged_augmented.csv \
   --output-dir models \
+  --target-precision 0.97 \
+  --min-recall 0.50 \
   --cv-folds 5 \
-  --max-positive-pairs 10000 \
-  --max-hard-negative-pairs 30000 \
+  --max-positive-pairs 20000 \
+  --max-hard-negative-pairs 60000 \
   --use-embeddings
 ```
 
-To regenerate an augmented dataset from base labels, use `cartsy-dedupe augment-training-data`; the pipeline runbook in `PIPELINE.md` describes the positive and hard-negative patterns.
+The model threshold is precision-constrained, with a recall guard. If the only thresholds satisfying the precision floor merge almost nothing, training records that the floor was unmet and uses the best-F1 operating point instead. Ties prefer the lower threshold that preserves the same precision/recall/F1 so calibrated plateaus do not become needlessly strict `0.99` cutoffs.
 
 Training writes:
 
@@ -78,6 +91,7 @@ summary_report.json
 ```
 
 `summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, embedding usage/cost estimates when using OpenAI, and per-stage cache paths for debugging. Product embedding caching is available to avoid recomputing embeddings for unchanged products across repeated runs.
+Pair artifacts separate `ml_score`, `evidence_score`, `decision_threshold`, and `decision_reason`; `score` is the evidence confidence used for display and cluster confidence, not a policy-clamped copy of the model threshold.
 
 ## Query Completed Runs
 

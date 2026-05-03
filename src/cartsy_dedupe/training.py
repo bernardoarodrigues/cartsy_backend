@@ -7,11 +7,11 @@ Entry points:
 * ``train_logistic_regression`` — train, calibrate, and threshold-tune a
   logistic-regression model from a labeled product CSV.
 
-Threshold selection uses stratified cross-validation, maximising F1 averaged
-across folds rather than fitting to a single held-out split.  Probability
-calibration (``CalibratedClassifierCV`` with isotonic regression) makes the
-output ``P(merge)`` values reliable so that a threshold near 0.50 is
-interpretable rather than an artifact of logit scaling on imbalanced data.
+Threshold selection uses stratified cross-validation and a held-out calibration
+split.  The selected threshold maximises F1 subject to the requested precision
+floor.  Probability calibration (``CalibratedClassifierCV`` with isotonic
+regression) makes the output ``P(merge)`` values reliable rather than an
+artifact of logit scaling on imbalanced data.
 """
 from __future__ import annotations
 
@@ -32,12 +32,33 @@ import numpy as np
 from tqdm import tqdm
 from dotenv import load_dotenv
 
-from cartsy_dedupe.embeddings import EmbeddingProvider, configured_embedding_model, embedding_provider_name
+from cartsy_dedupe.embeddings import (
+    EmbeddingProvider,
+    configured_embedding_dimensions,
+    configured_embedding_model,
+    embedding_provider_name,
+)
 from cartsy_dedupe.features import DEFAULT_FEATURE_COLUMNS, build_pair_features, hard_contradiction_features
 from cartsy_dedupe.ingest import load_rows
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.schemas import NormalizedProduct
 from cartsy_dedupe.scoring import evaluate_rule, string_similarity
+from cartsy_dedupe.utils.pipeline_cache import (
+    cache_path_for,
+    code_fingerprint,
+    embedding_cache_enabled,
+    embedding_cache_dir,
+    embedding_cache_key,
+    embedding_text_hash,
+    find_embedding_matrix_cache,
+    iter_embedding_matrix_caches,
+    normalization_cache_key,
+    normalize_module_hash,
+    product_signature,
+    read_embedding_cache,
+    read_stage_cache,
+    write_embedding_cache,
+)
 from cartsy_dedupe.utils.pipeline_helpers import embedding_text
 
 PRODUCT_COLUMNS = [
@@ -224,6 +245,7 @@ def train_logistic_regression(
     embedding_provider: str | None = None,
     embedding_model: str | None = None,
     cv_folds: int = 5,
+    min_recall: float = 0.50,
 ) -> dict[str, object]:
     """Train, calibrate, and evaluate a logistic-regression pair scorer.
 
@@ -231,9 +253,9 @@ def train_logistic_regression(
     The base model is calibrated on the held-out calibration split using
     ``CalibratedClassifierCV(method='isotonic')``, making ``P(merge)`` values
     reliable rather than raw logit-derived scores.  When calibration is
-    available, the saved threshold is selected from those calibrated held-out
-    probabilities so runtime uses the same score scale that evaluation used.
-    Raw ``cv_folds`` thresholds are still recorded as diagnostics.
+    available, the saved threshold is selected from calibrated held-out
+    probabilities with ``target_precision`` as a precision floor.  Raw
+    ``cv_folds`` thresholds are still recorded as diagnostics.
 
     For small datasets where the three-split or CV would fail, the function
     falls back to a simpler 70/30 split with a single F1-optimal threshold.
@@ -241,8 +263,15 @@ def train_logistic_regression(
     Parameters
     ----------
     target_precision:
-        Retained for backward compatibility — stored in the metrics JSON but
-        no longer used to select the decision threshold.
+        Precision floor used when selecting the merge threshold.  The trainer
+        chooses the best-F1 threshold among rows that meet this precision; if no
+        threshold reaches it, the highest-precision threshold is used.
+    min_recall:
+        Recall guard for threshold selection. If precision-constrained rows
+        exist but all have recall below this floor, the trainer prefers the
+        best-F1 operating point and records that the precision floor was not
+        met. This prevents degenerate thresholds that only merge a handful of
+        near-perfect positives.
     cv_folds:
         Number of stratified CV folds for threshold selection.  Automatically
         clamped down when the training set is too small.
@@ -309,6 +338,11 @@ def train_logistic_regression(
             output_path,
             resolved_embedding_provider,
             resolved_embedding_model,
+            normalization_key=normalization_cache_key(
+                input_path=Path(products_path),
+                limit=None,
+                normalize_hash=normalize_module_hash(),
+            ),
         )
     else:
         logger.info("Skipping embeddings (lexical and structural features only)")
@@ -376,17 +410,17 @@ def train_logistic_regression(
             fold_model.fit(x_train_scaled[fold_train_local], y[train_idx][fold_train_local])
             fold_scores = fold_model.predict_proba(x_train_scaled[fold_val_local])[:, 1]
             curve = build_threshold_curve(y[train_idx][fold_val_local], fold_scores)
-            best = max(curve, key=lambda r: r["f1"])
+            best = select_threshold_row(curve, target_precision=target_precision, min_recall=min_recall)
             cv_thresholds.append(float(best["threshold"]))
         threshold = float(np.median(cv_thresholds))
-        threshold_selection_method = "uncalibrated_cv_median_f1"
+        threshold_selection_method = "uncalibrated_cv_median_precision_constrained_f1"
         logger.info("CV threshold selection (%d folds): thresholds=%s median=%.4f", effective_folds, cv_thresholds, threshold)
     else:
-        # Too few samples for reliable CV — use F1-optimal on test set as fallback.
-        logger.warning("Skipping CV threshold (too few samples per class); using F1-optimal on test set")
+        # Too few samples for reliable CV — use a precision-constrained test threshold as fallback.
+        logger.warning("Skipping CV threshold (too few samples per class); using precision-constrained threshold on test set")
         fallback_scores = base_model.predict_proba(scaler.transform(x[test_idx]))[:, 1]
         fallback_curve = build_threshold_curve(y[test_idx], fallback_scores)
-        threshold = float(max(fallback_curve, key=lambda r: r["f1"])["threshold"])
+        threshold = float(select_threshold_row(fallback_curve, target_precision=target_precision, min_recall=min_recall)["threshold"])
         cv_thresholds = [threshold]
 
     # ── Probability calibration ────────────────────────────────────────────────
@@ -406,8 +440,15 @@ def train_logistic_regression(
         model.fit(cal_x, cal_y)
         cal_scores = model.predict_proba(cal_x)[:, 1]
         calibration_threshold_curve = build_threshold_curve(cal_y, cal_scores)
-        threshold = float(max(calibration_threshold_curve, key=lambda r: r["f1"])["threshold"])
-        threshold_selection_method = "calibrated_holdout_f1"
+        threshold_row = select_threshold_row(
+            calibration_threshold_curve,
+            target_precision=target_precision,
+            min_recall=min_recall,
+        )
+        threshold = float(threshold_row["threshold"])
+        threshold_selection_method = "calibrated_holdout_precision_constrained_f1"
+        if float(threshold_row["precision"]) < target_precision:
+            threshold_selection_method = "calibrated_holdout_f1_precision_floor_unmet"
         logger.info("Calibrated threshold selection: threshold=%.4f", threshold)
     else:
         logger.info("Skipping calibration (calibration set too small or absent)")
@@ -439,6 +480,7 @@ def train_logistic_regression(
         "threshold": threshold,
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),
         "target_precision": target_precision,
+        "min_recall": min_recall,
         "cv_folds": effective_folds,
         "use_embeddings": use_embeddings,
         "embedding_provider": resolved_embedding_provider,
@@ -461,6 +503,8 @@ def train_logistic_regression(
         "feature_columns": DEFAULT_FEATURE_COLUMNS,
         "threshold": threshold,
         "target_precision": target_precision,
+        "min_recall": min_recall,
+        "threshold_precision_floor_met": bool(float(precision) >= target_precision),
         "threshold_selection_method": threshold_selection_method,
         "cv_folds": effective_folds,
         "cv_thresholds": cv_thresholds,
@@ -720,35 +764,134 @@ def compute_training_semantic_similarities(
     output_path: Path,
     embedding_provider: str,
     embedding_model: str,
+    *,
+    normalization_key: str | None = None,
 ) -> dict[tuple[int, int], float]:
     embedder = EmbeddingProvider(provider=embedding_provider, model=embedding_model)
     indexes = sorted({index for pair in pair_examples for index in (pair.left_index, pair.right_index)})
-    texts = [
-        embedding_text(
-            brand=products[index].brand_raw,
-            title=products[index].name_raw,
-            category=products[index].category_raw,
-            description=products[index].description_raw,
-            specs=products[index].specs_raw,
-            dimension=products[index].dimension_raw,
-        )
-        for index in indexes
-    ]
+    texts = {index: training_embedding_text(products[index]) for index in indexes}
     embeddings: dict[int, list[float]] = {}
-    batch_offsets = range(0, len(indexes), 128)
-    if len(indexes) > 128:
+
+    cache_entries: dict[str, dict[str, Any]] = {}
+    training_cache_path: Path | None = None
+    training_cache_metadata: dict[str, Any] | None = None
+    embedding_dimensions = training_expected_embedding_dimensions(embedding_provider, embedding_model)
+    if embedding_cache_enabled():
+        cache_entries = load_training_embedding_cache_entries(
+            expected_dimensions=embedding_dimensions,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+        )
+        embedding_code = code_fingerprint("utils/pipeline_helpers.py")
+        training_cache_id = embedding_cache_key(
+            normalization_key=f"training:{product_signature(products)}",
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+            embedding_dimensions=embedding_dimensions,
+            code=embedding_code,
+        )
+        training_cache_path = cache_path_for("embeddings", training_cache_id)
+        training_cache_metadata = {
+            "stage": "training_product_embeddings",
+            "normalization_key": f"training:{product_signature(products)}",
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
+            "embedding_dimensions": embedding_dimensions,
+            "code": embedding_code,
+        }
+
+    missing_indexes: list[int] = []
+    cache_hits = 0
+    matrix_cache_hits = 0
+    fallback_matrix_cache_hits = 0
+    matrix_cache_path: Path | None = None
+    matrix_cache = (
+        find_embedding_matrix_cache(
+            normalization_key=normalization_key,
+            expected_dimensions=embedding_dimensions,
+        )
+        if normalization_key and embedding_cache_enabled()
+        else None
+    )
+    matrix_path: Path | None = None
+    matrix_source_id_to_index: dict[str, int] = {}
+    embedding_matrix: np.ndarray | None = None
+    if matrix_cache is not None:
+        matrix_path, matrix_source_id_to_index, embedding_matrix = matrix_cache
+    fallback_matrix_caches = (
+        [
+            cache
+            for cache in iter_embedding_matrix_caches(expected_dimensions=embedding_dimensions)
+            if matrix_path is None or cache[0] != matrix_path
+        ]
+        if embedding_cache_enabled()
+        else []
+    )
+    for index in indexes:
+        source_id = products[index].source_id
+        if embedding_matrix is not None:
+            matrix_index = matrix_source_id_to_index.get(str(source_id))
+            if matrix_index is not None and 0 <= matrix_index < int(embedding_matrix.shape[0]):
+                embeddings[index] = embedding_matrix[matrix_index].astype(float).tolist()
+                matrix_cache_path = matrix_path
+                matrix_cache_hits += 1
+                continue
+        fallback_embedding = None
+        fallback_matrix_path = None
+        for candidate_matrix_path, candidate_source_id_to_index, candidate_matrix in fallback_matrix_caches:
+            matrix_index = candidate_source_id_to_index.get(str(source_id))
+            if matrix_index is not None and 0 <= matrix_index < int(candidate_matrix.shape[0]):
+                fallback_embedding = candidate_matrix[matrix_index].astype(float).tolist()
+                fallback_matrix_path = candidate_matrix_path
+                break
+        if fallback_embedding is not None:
+            embeddings[index] = fallback_embedding
+            matrix_cache_path = fallback_matrix_path
+            fallback_matrix_cache_hits += 1
+            continue
+        cached_entry = cache_entries.get(source_id)
+        if cached_entry and cached_entry.get("text_hash") == embedding_text_hash(texts[index]):
+            embeddings[index] = list(cached_entry["embedding"])
+            cache_hits += 1
+        else:
+            missing_indexes.append(index)
+
+    batch_offsets = range(0, len(missing_indexes), 128)
+    if len(missing_indexes) > 128:
         batch_offsets = tqdm(batch_offsets, desc=f"{embedding_provider} embedding batches", unit="batch")
+    created_embeddings = 0
     for offset in batch_offsets:
-        batch_indexes = indexes[offset : offset + 128]
-        result = embedder.embed_texts(texts[offset : offset + 128])
+        batch_indexes = missing_indexes[offset : offset + 128]
+        result = embedder.embed_texts([texts[index] for index in batch_indexes])
         for index, embedding in zip(batch_indexes, result.embeddings, strict=True):
+            if len(embedding) != embedding_dimensions:
+                raise ValueError(
+                    f"{embedding_provider} embedding model {embedding_model!r} returned "
+                    f"{len(embedding)} dimensions, expected {embedding_dimensions}. "
+                    "Clear CARTSY_EMBEDDING_DIMENSIONS or use a matching embedding cache/model."
+                )
             embeddings[index] = embedding
+            source_id = products[index].source_id
+            cache_entries[source_id] = {
+                "text_hash": embedding_text_hash(texts[index]),
+                "embedding": embedding,
+            }
+            created_embeddings += 1
+        if training_cache_path is not None and training_cache_metadata is not None:
+            write_embedding_cache(training_cache_path, entries=cache_entries, metadata=training_cache_metadata)
     (output_path / "training_embedding_products.json").write_text(
         json.dumps(
             {
                 "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
                 "source_ids": [products[index].source_id for index in indexes],
+                "cache_hits": cache_hits,
+                "matrix_cache_hits": matrix_cache_hits,
+                "fallback_matrix_cache_hits": fallback_matrix_cache_hits,
+                "created_embeddings": created_embeddings,
+                "cache_enabled": embedding_cache_enabled(),
+                "cache_path": str(training_cache_path) if training_cache_path is not None else None,
+                "matrix_cache_path": str(matrix_cache_path) if matrix_cache_path is not None else None,
             },
             indent=2,
         ) + "\n",
@@ -758,12 +901,70 @@ def compute_training_semantic_similarities(
     if len(pair_examples) > 500:
         pair_iter = tqdm(pair_examples, desc="Pair cosine similarity", unit="pair")
     semantic: dict[tuple[int, int], float] = {}
+    skipped_dimension_mismatches = 0
     for pair in pair_iter:
         if pair.left_index in embeddings and pair.right_index in embeddings:
+            if len(embeddings[pair.left_index]) != len(embeddings[pair.right_index]):
+                skipped_dimension_mismatches += 1
+                continue
             semantic[(pair.left_index, pair.right_index)] = cosine(
                 embeddings[pair.left_index], embeddings[pair.right_index]
             )
+    if skipped_dimension_mismatches:
+        logger.warning(
+            "Skipped %s semantic pair similarities because cached embeddings had mixed dimensions.",
+            skipped_dimension_mismatches,
+        )
     return semantic
+
+
+def training_embedding_text(product: NormalizedProduct) -> str:
+    return embedding_text(
+        brand=product.brand_raw,
+        title=product.name_raw,
+        category=product.category_raw,
+        description=product.description_raw,
+        specs=product.specs_raw,
+        dimension=product.dimension_raw,
+    )
+
+
+def training_expected_embedding_dimensions(embedding_provider: str, embedding_model: str) -> int:
+    if embedding_provider == "openai":
+        if embedding_model == "text-embedding-3-large":
+            return 3072
+        return 1536
+    return configured_embedding_dimensions(embedding_provider, embedding_model)
+
+
+def load_training_embedding_cache_entries(
+    *,
+    expected_dimensions: int | None = None,
+    embedding_provider: str | None = None,
+    embedding_model: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for cache_path in sorted(embedding_cache_dir().glob("*.json")):
+        cache_blob = read_stage_cache(cache_path)
+        if cache_blob is None:
+            continue
+        metadata = cache_blob.get("metadata") or {}
+        if embedding_provider and metadata.get("embedding_provider") not in (None, embedding_provider):
+            continue
+        if embedding_model and metadata.get("embedding_model") not in (None, embedding_model):
+            continue
+        cache_entries = read_embedding_cache(cache_path)
+        if cache_entries:
+            for source_id, cache_entry in cache_entries.items():
+                embedding = cache_entry.get("embedding")
+                if (
+                    expected_dimensions is not None
+                    and isinstance(embedding, list)
+                    and len(embedding) != expected_dimensions
+                ):
+                    continue
+                entries[source_id] = cache_entry
+    return entries
 
 
 def build_threshold_curve(y_true: np.ndarray, scores: np.ndarray) -> list[dict[str, float]]:
@@ -778,6 +979,27 @@ def build_threshold_curve(y_true: np.ndarray, scores: np.ndarray) -> list[dict[s
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
         rows.append({"threshold": float(threshold), "precision": precision, "recall": recall, "f1": f1, "tp": tp, "fp": fp, "fn": fn})
     return rows
+
+
+def select_threshold_row(
+    curve: list[dict[str, float]],
+    *,
+    target_precision: float,
+    min_recall: float = 0.50,
+) -> dict[str, float]:
+    """Choose the best threshold while honoring the requested precision floor."""
+    if not curve:
+        raise ValueError("Cannot select threshold from an empty curve.")
+    qualifying = [row for row in curve if row["precision"] >= target_precision and row["tp"] > 0]
+    recall_qualified = [row for row in qualifying if row["recall"] >= min_recall]
+    if recall_qualified:
+        return max(recall_qualified, key=lambda row: (row["f1"], row["recall"], -row["threshold"]))
+    if qualifying:
+        best_f1 = max((row for row in curve if row["tp"] > 0), key=lambda row: (row["f1"], row["precision"], row["recall"], -row["threshold"]))
+        if best_f1["recall"] > max(row["recall"] for row in qualifying):
+            return best_f1
+        return max(qualifying, key=lambda row: (row["f1"], row["recall"], -row["threshold"]))
+    return max(curve, key=lambda row: (row["precision"], row["recall"], -row["threshold"]))
 
 
 def read_truth(path: str | Path) -> dict[str, str]:

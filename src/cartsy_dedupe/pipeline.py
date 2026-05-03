@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from cartsy_dedupe.clustering import build_clusters
-from cartsy_dedupe.config import PipelineConfig
+from cartsy_dedupe.config import GENERIC_BRANDS, PipelineConfig
 from cartsy_dedupe.embeddings import (
     EmbeddingProvider,
     configured_embedding_dimensions,
@@ -47,23 +47,35 @@ from cartsy_dedupe.scoring import MatchCertainty, evaluate_rule
 from cartsy_dedupe.storage import prepare_output_dir, write_outputs
 from cartsy_dedupe.utils.pipeline_cache import (
     cache_path_for,
+    candidate_pairs_from_records,
+    candidate_pairs_to_records,
     clustering_cache_key,
+    clusters_to_records,
     code_fingerprint,
+    embedding_cache_enabled,
     embedding_cache_key,
     embedding_text_hash,
+    find_embedding_matrix_cache,
     normalization_cache_dir,
     normalization_cache_key,
     normalize_module_hash,
+    pair_blocks_from_records,
+    pair_blocks_to_records,
     product_signature,
+    read_cache_payload,
     read_embedding_cache,
-    read_stage_cache,
+    read_normalization_cache,
     retrieval_layer_cache_key,
     retrieval_rows_from_records,
     retrieval_rows_to_records,
     retrieval_cache_key,
     scoring_cache_key,
     stage_env_fingerprint,
+    stage_cache_enabled,
+    stage_cache_status as make_stage_cache_status,
     write_embedding_cache,
+    write_cache_payload,
+    write_normalization_cache,
     write_stage_cache,
 )
 from cartsy_dedupe.utils.pipeline_helpers import (
@@ -209,7 +221,7 @@ class DedupePipeline:
     def ml_threshold(self, fallback: float) -> float:
         if self.ml_model_bundle is None:
             return fallback
-        return float(self.ml_model_bundle.get("threshold", fallback))
+        return max(float(self.ml_model_bundle.get("threshold", fallback)), fallback)
 
     def dev_log(self, message: str) -> None:
         if self.dev:
@@ -245,6 +257,13 @@ class DedupePipeline:
             self.insert_products(conn, products)
             self.insert_exact_keys(conn, products)
         return products
+
+    def load_normalized_products(self, products: list[NormalizedProduct]) -> None:
+        self.dev_log("loading cached normalized rows into Postgres staging tables")
+        with self.connect() as conn:
+            self.reset_database(conn)
+            self.insert_products(conn, products)
+            self.insert_exact_keys(conn, products)
 
     def generate_candidate_pairs(
         self,
@@ -619,7 +638,7 @@ class DedupePipeline:
         embedding_cache_path: Path | None = None
         embedding_cache_entries: dict[str, dict[str, Any]] = {}
         embedding_cache_metadata: dict[str, Any] | None = None
-        if normalization_key:
+        if normalization_key and embedding_cache_enabled():
             embedding_code = code_fingerprint("utils/pipeline_helpers.py")
             embedding_cache_id = embedding_cache_key(
                 normalization_key=normalization_key,
@@ -639,6 +658,47 @@ class DedupePipeline:
                 "code": embedding_code,
             }
 
+        embedding_matrix_cache = (
+            find_embedding_matrix_cache(
+                normalization_key=normalization_key,
+                expected_dimensions=self.embedding_dimensions,
+            )
+            if normalization_key and embedding_cache_enabled()
+            else None
+        )
+        if embedding_matrix_cache is not None:
+            matrix_path, source_id_to_index, embedding_matrix = embedding_matrix_cache
+            matrix_cached_updates: list[tuple[list[float], str]] = []
+            missing_matrix_rows: list[tuple[str, str, str, str, str, str, str]] = []
+            for row in rows:
+                index = source_id_to_index.get(str(row[0]))
+                if index is None or index < 0 or index >= int(embedding_matrix.shape[0]):
+                    missing_matrix_rows.append(row)
+                    continue
+                matrix_cached_updates.append((embedding_matrix[index].astype(float).tolist(), row[0]))
+            if matrix_cached_updates:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "UPDATE cartsy_products SET embedding = %s WHERE source_id = %s",
+                        matrix_cached_updates,
+                    )
+                self.embedding_cache_hit_count += len(matrix_cached_updates)
+                self.dev_log(
+                    f"reused {len(matrix_cached_updates):,} matrix cached embeddings from {matrix_path}"
+                )
+            rows = missing_matrix_rows
+            if not rows:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_cartsy_products_embedding
+                        ON cartsy_products USING hnsw (embedding vector_cosine_ops)
+                        WHERE embedding IS NOT NULL
+                        """
+                    )
+                conn.commit()
+                return
+
         rows_to_embed: list[tuple[str, str, str, str, str, str, str]] = []
         cached_updates: list[tuple[list[float], str]] = []
         for row in rows:
@@ -652,8 +712,10 @@ class DedupePipeline:
             )
             cached_entry = embedding_cache_entries.get(row[0])
             if cached_entry and cached_entry.get("text_hash") == embedding_text_hash(text):
-                cached_updates.append((list(cached_entry["embedding"]), row[0]))
-                continue
+                cached_embedding = list(cached_entry["embedding"])
+                if len(cached_embedding) == self.embedding_dimensions:
+                    cached_updates.append((cached_embedding, row[0]))
+                    continue
             rows_to_embed.append(row)
         if cached_updates:
             with conn.cursor() as cur:
@@ -683,6 +745,13 @@ class DedupePipeline:
             result = embedder.embed_texts(texts)
             if result.usage is not None:
                 self.metrics.add_usage(self.embedding_model, result.usage)
+            for embedding in result.embeddings:
+                if len(embedding) != self.embedding_dimensions:
+                    raise ValueError(
+                        f"{self.embedding_provider} embedding model {self.embedding_model!r} returned "
+                        f"{len(embedding)} dimensions, expected {self.embedding_dimensions}. "
+                        "Use a matching embedding provider/model or clear stale CARTSY_EMBEDDING_DIMENSIONS."
+                    )
             updates = [(embedding, row[0]) for embedding, row in zip(result.embeddings, batch, strict=True)]
             with conn.cursor() as cur:
                 cur.executemany("UPDATE cartsy_products SET embedding = %s WHERE source_id = %s", updates)
@@ -889,6 +958,7 @@ class DedupePipeline:
         retrieval_env: dict[str, str | None] | None,
         retrieval_code: dict[str, str] | None,
     ) -> list[tuple[int, int, str]]:
+        cache_enabled = stage_cache_enabled()
         layer_env = self.layer_cache_env(layer, retrieval_env) if retrieval_env is not None else None
         if normalization_key and layer_env is not None and retrieval_code is not None:
             layer_key = retrieval_layer_cache_key(
@@ -900,29 +970,32 @@ class DedupePipeline:
             )
             layer_path = cache_path_for(f"retrieve_candidates_{layer}", layer_key)
             self.retrieval_layer_cache_status[layer] = {
+                "enabled": int(cache_enabled),
                 "used": 0,
                 "path": str(layer_path),
                 "key": layer_key,
             }
-            cached = read_stage_cache(layer_path)
-            if cached is not None:
+            cached_payload = read_cache_payload(layer_path, enabled=cache_enabled)
+            if cached_payload is not None:
                 self.retrieval_layer_cache_status[layer]["used"] = 1
-                return retrieval_rows_from_records(cached["payload"].get("rows") or [])
-            fallback_path, fallback_blob = self.find_compatible_retrieval_layer_cache(
+                self.retrieval_layer_cache_status[layer]["mode"] = "exact"
+                return retrieval_rows_from_records(cached_payload.get("rows") or [])
+            fallback_path, fallback_payload = self.find_compatible_retrieval_layer_cache(
                 layer=layer,
                 layer_path=layer_path,
                 normalization_key=normalization_key,
                 layer_params=layer_params,
+                enabled=cache_enabled,
             )
-            if fallback_blob is not None:
+            if fallback_payload is not None:
                 self.retrieval_layer_cache_status[layer]["used"] = 1
-                self.retrieval_layer_cache_status[layer]["mode"] = "lenient"
+                self.retrieval_layer_cache_status[layer]["mode"] = "compatible"
                 self.retrieval_layer_cache_status[layer]["path"] = str(fallback_path)
-                return retrieval_rows_from_records(fallback_blob["payload"].get("rows") or [])
+                return retrieval_rows_from_records(fallback_payload.get("rows") or [])
 
         rows = self.fetch_candidate_rows(conn, layer, sql, params)
         if normalization_key and layer_env is not None and retrieval_code is not None:
-            write_stage_cache(
+            write_cache_payload(
                 layer_path,
                 metadata={
                     "stage": f"retrieve_candidates:{layer}",
@@ -932,6 +1005,7 @@ class DedupePipeline:
                     "code": retrieval_code,
                 },
                 payload={"rows": retrieval_rows_to_records(rows)},
+                enabled=cache_enabled,
             )
         return rows
 
@@ -964,15 +1038,24 @@ class DedupePipeline:
         layer_path: Path,
         normalization_key: str,
         layer_params: dict[str, object],
+        enabled: bool,
     ) -> tuple[Path | None, dict[str, Any] | None]:
+        if not enabled:
+            return None, None
         stage_name = f"retrieve_candidates:{layer}"
         for candidate_path in sorted(layer_path.parent.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
             if candidate_path == layer_path:
                 continue
-            candidate_blob = read_stage_cache(candidate_path)
-            if candidate_blob is None:
+            candidate_payload = read_cache_payload(candidate_path, enabled=enabled)
+            if candidate_payload is None:
                 continue
-            metadata = candidate_blob.get("metadata")
+            try:
+                raw_blob = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw_blob, dict):
+                continue
+            metadata = raw_blob.get("metadata")
             if not isinstance(metadata, dict):
                 continue
             if not self.cache_metadata_matches_layer(
@@ -982,7 +1065,7 @@ class DedupePipeline:
                 layer_params=layer_params,
             ):
                 continue
-            return candidate_path, candidate_blob
+            return candidate_path, candidate_payload
         return None, None
 
     @staticmethod
@@ -1065,34 +1148,59 @@ class DedupePipeline:
         threshold = self.ml_threshold(config.merge_threshold)
 
         if rule_decision.certainty == MatchCertainty.CERTAIN_MATCH:
-            ml_score, score, decision = 1.0, 1.0, "merge"
+            ml_score, evidence_score, decision = 1.0, 1.0, "merge"
             relation = "certain_match"
             hard_contradiction_val = 0.0
+            decision_reason = "rule_certain_match"
         elif rule_decision.certainty == MatchCertainty.CERTAIN_BLOCK:
-            ml_score, score, decision = 0.0, 0.0, "no_merge"
+            ml_score, evidence_score, decision = 0.0, 0.0, "no_merge"
             relation = "certain_block"
             hard_contradiction_val = 1.0
+            decision_reason = "rule_certain_block"
         else:
             ml_score = self.predict_ml_score(pair_features)
             hard_contradiction = hard_contradiction_features(pair_features)
             hard_contradiction_val = float(hard_contradiction)
-            score = ml_score
-            relation = "exact_match"
+            strong_policy_reason = strong_match_policy_reason(rule_decision, pair_features)
+            evidence_score = pair_evidence_score(
+                ml_score=ml_score,
+                retrieval=retrieval,
+                pair_features=pair_features,
+                semantic_sim=semantic_sim,
+                rule_certainty=rule_decision.certainty,
+                strong_policy_reason=strong_policy_reason,
+                hard_contradiction=hard_contradiction,
+            )
+            if strong_policy_reason:
+                relation = "strong_exact_match"
+                decision = "merge"
+                decision_reason = f"strong_policy:{strong_policy_reason}"
+            else:
+                relation = "exact_match"
+                if hard_contradiction:
+                    relation = "same_parent_different_variant"
+                    decision_reason = "hard_contradiction"
+                elif ml_score < threshold and ml_score >= config.near_miss_threshold:
+                    relation = "similar_related_product"
+                    decision_reason = "below_merge_threshold"
+                elif ml_score < config.near_miss_threshold:
+                    relation = "no_match"
+                    decision_reason = "below_near_miss_threshold"
+                else:
+                    decision_reason = "ml_score_above_threshold"
+                decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
             if hard_contradiction:
                 relation = "same_parent_different_variant"
-                score = min(ml_score, threshold - 0.01)
-            elif ml_score < threshold and ml_score >= config.near_miss_threshold:
-                relation = "similar_related_product"
-            elif ml_score < config.near_miss_threshold:
-                relation = "no_match"
-            score = max(0.0, min(1.0, score))
-            decision = "merge" if not hard_contradiction and ml_score >= threshold else "no_merge"
+                decision_reason = "hard_contradiction"
+            evidence_score = max(0.0, min(1.0, evidence_score))
 
         explanations = [
             f"relation:{relation}",
+            f"decision_reason:{decision_reason}",
             f"rule:{rule_decision.certainty.value}",
             f"rule_reason:{rule_decision.reason}",
             f"ml_score:{ml_score:.2f}",
+            f"evidence_score:{evidence_score:.2f}",
             f"ml_threshold:{threshold:.2f}",
             f"exact:{retrieval['exact']:.2f}",
             f"fts:{retrieval['lexical']:.2f}",
@@ -1100,6 +1208,8 @@ class DedupePipeline:
             f"vector:{retrieval['vector']:.2f}",
             f"semantic:{semantic_sim:.2f}",
         ]
+        if "strong_policy_reason" in locals() and strong_policy_reason:
+            explanations.append(f"strong_policy:{strong_policy_reason}")
         feature_scores = {
             **rule_decision.feature_scores,
             "postgres_exact": retrieval["exact"],
@@ -1108,19 +1218,214 @@ class DedupePipeline:
             "postgres_vector": retrieval["vector"],
             "semantic_sim": semantic_sim,
             "ml_score": ml_score,
+            "evidence_score": evidence_score,
             "ml_threshold": threshold,
             "hard_contradiction": hard_contradiction_val,
         }
         feature_scores.update({f"ml_{key}": value for key, value in pair_features.items()})
+        explanations.extend(
+            decision_reason_labels(
+                left=left,
+                right=right,
+                pair_features=pair_features,
+                feature_scores=feature_scores,
+            )
+        )
         return CandidatePair(
             product_a_id=left.source_id,
             product_b_id=right.source_id,
-            score=score,
+            score=evidence_score,
             decision=decision,
-            explanation="; ".join(explanations[:18]),
+            explanation="; ".join(explanations[:32]),
             blocking_keys=tuple(sorted(block_keys)),
             feature_scores=feature_scores,
+            ml_score=ml_score,
+            evidence_score=evidence_score,
+            decision_threshold=threshold,
+            decision_reason=decision_reason,
         )
+
+
+def pair_evidence_score(
+    *,
+    ml_score: float,
+    retrieval: dict[str, float],
+    pair_features: dict[str, float],
+    semantic_sim: float,
+    rule_certainty: MatchCertainty,
+    strong_policy_reason: str | None,
+    hard_contradiction: bool,
+) -> float:
+    """Continuous confidence for explaining a pair, separate from merge policy.
+
+    The merge decision still comes from exact-match rules, hard contradiction
+    guards, and the calibrated ML threshold. This score is intentionally an
+    evidence summary for humans and downstream cluster confidence, so policy
+    promotions do not collapse every accepted exact match to the model
+    threshold.
+    """
+    if hard_contradiction:
+        return min(float(ml_score), 0.49)
+
+    title_sim = max(
+        float(pair_features.get("title_token_set", 0.0)),
+        float(pair_features.get("title_partial", 0.0)),
+        float(pair_features.get("salient_token_jaccard", 0.0)),
+    )
+    exact_strength = max(
+        float(pair_features.get("exact_evidence_strength", 0.0)),
+        float(retrieval.get("exact", 0.0)),
+    )
+    identifier_strength = max(
+        float(pair_features.get("identifier_any", 0.0)),
+        float(pair_features.get("exact_global_id", 0.0)),
+        float(pair_features.get("exact_retailer_sku", 0.0)),
+        float(pair_features.get("exact_canonical_url", 0.0)),
+    )
+    lexical_strength = max(float(retrieval.get("lexical", 0.0)), float(retrieval.get("trigram", 0.0)))
+    brand_strength = max(float(pair_features.get("brand_exact", 0.0)), float(pair_features.get("brand_fuzzy", 0.0)))
+    attribute_strength = max(
+        float(pair_features.get("size_match", 0.0)),
+        float(pair_features.get("pack_match", 0.0)),
+        float(pair_features.get("category_exact", 0.0)),
+    )
+
+    score = (
+        0.28 * float(ml_score)
+        + 0.18 * exact_strength
+        + 0.17 * title_sim
+        + 0.11 * max(float(semantic_sim), float(retrieval.get("vector", 0.0)))
+        + 0.10 * lexical_strength
+        + 0.07 * identifier_strength
+        + 0.05 * brand_strength
+        + 0.04 * attribute_strength
+    )
+
+    if rule_certainty == MatchCertainty.STRONG_MATCH:
+        score += 0.04
+    if strong_policy_reason:
+        policy_floor = 0.88 + (0.05 * title_sim) + (0.03 * identifier_strength) + (0.02 * brand_strength)
+        score = max(score, min(policy_floor, 0.985))
+
+    if pair_features.get("size_conflict", 0.0) or pair_features.get("pack_conflict", 0.0):
+        score -= 0.18
+    if pair_features.get("variant_conflict", 0.0):
+        score -= 0.12
+    return max(0.0, min(1.0, score))
+
+
+def decision_reason_labels(
+    *,
+    left: NormalizedProduct,
+    right: NormalizedProduct,
+    pair_features: dict[str, float],
+    feature_scores: dict[str, float],
+) -> list[str]:
+    """Return countable diagnostic reason labels for pair explanations."""
+    labels: list[str] = []
+
+    def add(label: str, condition: bool) -> None:
+        if condition and label not in labels:
+            labels.append(label)
+
+    add(
+        "penalty",
+        feature_scores.get("hard_contradiction", 0.0) > 0.0
+        or pair_features.get("variant_conflict", 0.0) > 0.0,
+    )
+    add(
+        "brand_match",
+        pair_features.get("brand_exact", 0.0) > 0.0 or feature_scores.get("brand", 0.0) >= 0.82,
+    )
+    add("generic_brand", left.brand_norm in GENERIC_BRANDS or right.brand_norm in GENERIC_BRANDS)
+    add(
+        "title_high",
+        pair_features.get("title_token_set", 0.0) >= 0.85 or feature_scores.get("title", 0.0) >= 0.85,
+    )
+    add("category_exact", pair_features.get("category_exact", 0.0) > 0.0)
+    add(
+        "same_retailer_sku",
+        pair_features.get("exact_sku_same_retailer", 0.0) > 0.0
+        or (
+            bool(left.retailer)
+            and left.retailer == right.retailer
+            and bool(left.identifiers.get("sku"))
+            and left.identifiers.get("sku") == right.identifiers.get("sku")
+        ),
+    )
+    add(
+        "identifier_match",
+        pair_features.get("identifier_any", 0.0) > 0.0 or feature_scores.get("identifier", 0.0) >= 0.65,
+    )
+    add(
+        "price_close",
+        feature_scores.get("price", 0.0) >= 1.0
+        or (
+            pair_features.get("price_both_present", 0.0) > 0.0
+            and pair_features.get("price_ratio_diff", 1.0) <= 0.15
+        ),
+    )
+
+    left_has_size = left.size_value is not None
+    right_has_size = right.size_value is not None
+    add("size_missing_both", not left_has_size and not right_has_size)
+    add("size_missing_one_side", left_has_size != right_has_size)
+    add("size_ambiguous", left.size_ambiguous or right.size_ambiguous)
+    add("size_match", pair_features.get("size_match", 0.0) > 0.0)
+
+    add(
+        "model_match",
+        pair_features.get("model_token_jaccard", 0.0) > 0.0 or feature_scores.get("model", 0.0) >= 1.0,
+    )
+    add("pack_missing_one_side", (left.pack_count is None) != (right.pack_count is None))
+    add("pack_match", pair_features.get("pack_match", 0.0) > 0.0)
+    return labels
+
+
+def strong_match_policy_reason(rule_decision: Any, features: dict[str, float]) -> str | None:
+    """Return a safe strong-match policy reason, or ``None`` when ML should decide.
+
+    The model remains responsible for weak and ambiguous pairs.  This policy only
+    restores deterministic merges for same-retailer SKU repeats where runtime
+    retrieval can be exact-only, and only when the title and variant evidence are
+    strong enough to avoid collapsing distinct options.
+    """
+    if rule_decision.certainty != MatchCertainty.STRONG_MATCH:
+        return None
+    if rule_decision.reason != "same_retailer_sku":
+        return None
+    if hard_contradiction_features(features):
+        return None
+    if float(features.get("exact_sku_same_retailer", 0.0)) < 1.0:
+        return None
+
+    title_token_set = float(features.get("title_token_set", 0.0))
+    title_partial = float(features.get("title_partial", 0.0))
+    salient_jaccard = float(features.get("salient_token_jaccard", 0.0))
+    size_known = float(features.get("size_match", 0.0)) >= 1.0 or float(features.get("size_conflict", 0.0)) >= 1.0
+    pack_known = float(features.get("pack_match", 0.0)) >= 1.0 or float(features.get("pack_conflict", 0.0)) >= 1.0
+    size_compatible = float(features.get("size_conflict", 0.0)) <= 0.0
+    pack_compatible = float(features.get("pack_conflict", 0.0)) <= 0.0
+    exact_title = title_token_set >= 0.995 and title_partial >= 0.995
+    near_exact_title = title_token_set >= 0.985 and title_partial >= 0.995 and salient_jaccard >= 0.90
+
+    if (exact_title or near_exact_title) and size_compatible and pack_compatible:
+        return "same_retailer_sku_near_exact_title"
+    if exact_title and not size_known and not pack_known:
+        return "same_retailer_sku_exact_title_no_variant_cues"
+
+    return None
+
+
+def _model_id_from_ml_path(ml_model_path: str | None) -> str | None:
+    """Directory name of the trained-model folder (matches /models listings)."""
+    if not ml_model_path:
+        return None
+    path = Path(ml_model_path).expanduser().resolve()
+    if not path.is_file():
+        return None
+    name = path.parent.name
+    return name if name else None
 
 
 def run_pipeline(
@@ -1138,6 +1443,7 @@ def run_pipeline(
     dedupe_pipeline = DedupePipeline(dev=dev)
     dedupe_pipeline.load_ml_model(config.ml_model_path)
     stage_timeline: list[dict[str, object]] = []
+    cache_enabled = stage_cache_enabled()
 
     def run_stage(name: str, action, *, items: int = 0):
         print(f"starting stage: {name}")
@@ -1163,7 +1469,7 @@ def run_pipeline(
     cache_key = normalization_cache_key(input_path=resolved_input_path, limit=limit, normalize_hash=normalize_hash)
     cache_path = normalization_cache_dir() / f"{cache_key}.json"
     stage_cache_status: dict[str, dict[str, object]] = {
-        "normalize_and_load_postgres": {"used": 0, "path": str(cache_path), "key": cache_key},
+        "normalize_and_load_postgres": make_stage_cache_status(cache_path, cache_key, enabled=cache_enabled),
     }
 
     print(f"loading {input_path}")
@@ -1179,7 +1485,26 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: normalize_and_load_postgres")
 
     def normalize_and_load_action():
-        return dedupe_pipeline.normalize_rows(rows)
+        cached = read_cache_payload(cache_path, enabled=cache_enabled)
+        if cached is not None:
+            products = read_normalization_cache(cache_path) or []
+            if products:
+                stage_cache_status["normalize_and_load_postgres"]["used"] = 1
+                dedupe_pipeline.load_normalized_products(products)
+                return products
+        products = dedupe_pipeline.normalize_rows(rows)
+        if cache_enabled:
+            write_normalization_cache(
+                cache_path,
+                metadata={
+                    "stage": "normalize_and_load_postgres",
+                    "input_path": str(resolved_input_path),
+                    "limit": limit,
+                    "normalize_hash": normalize_hash,
+                },
+                products=products,
+            )
+        return products
 
     products = run_stage("normalize_and_load_postgres", normalize_and_load_action, items=len(rows))
     print(f"normalized {len(products):,} products")
@@ -1217,53 +1542,131 @@ def run_pipeline(
         code=retrieval_code,
     )
     retrieval_path = cache_path_for("retrieve_candidates", retrieval_key)
-    stage_cache_status["retrieve_candidates"] = {"used": 0, "path": str(retrieval_path), "key": retrieval_key}
+    stage_cache_status["retrieve_candidates"] = make_stage_cache_status(
+        retrieval_path,
+        retrieval_key,
+        enabled=cache_enabled,
+    )
 
     print("retrieving candidate pairs")
     dedupe_pipeline.dev_log("stage start: retrieve_candidates")
 
     def retrieve_candidates_action():
+        cached = read_cache_payload(retrieval_path, enabled=cache_enabled)
+        if cached is not None:
+            pair_blocks = pair_blocks_from_records(cached.get("pair_blocks") or [])
+            blocking_stats = {str(key): int(value) for key, value in dict(cached.get("blocking_stats") or {}).items()}
+            stage_cache_status["retrieve_candidates"]["used"] = 1
+            return pair_blocks, blocking_stats
         pair_blocks, blocking_stats = dedupe_pipeline.generate_candidate_pairs(
             products,
             config=config,
             normalization_key=cache_key,
+            retrieval_env=retrieval_env if cache_enabled else None,
+            retrieval_code=retrieval_code if cache_enabled else None,
         )
         stage_cache_status["retrieve_candidates"]["layers"] = dedupe_pipeline.retrieval_layer_cache_status
+        write_cache_payload(
+            retrieval_path,
+            metadata={
+                "stage": "retrieve_candidates",
+                "normalization_key": cache_key,
+                "config": asdict(config),
+                "env": retrieval_env,
+                "code": retrieval_code,
+            },
+            payload={
+                "pair_blocks": pair_blocks_to_records(pair_blocks),
+                "blocking_stats": dict(blocking_stats),
+            },
+            enabled=cache_enabled,
+        )
         return pair_blocks, blocking_stats
 
     pair_blocks, blocking_stats = run_stage("retrieve_candidates", retrieve_candidates_action, items=len(products))
     print(f"generated {len(pair_blocks):,} candidate pairs")
 
-    scoring_code = code_fingerprint("pipeline.py", "embeddings.py", "scoring.py", "utils/pipeline_helpers.py", "utils/pipeline_sql.py")
+    scoring_code = code_fingerprint(
+        "pipeline.py",
+        "embeddings.py",
+        "scoring.py",
+        "utils/pipeline_helpers.py",
+        "utils/pipeline_sql.py",
+    )
     scoring_key = scoring_cache_key(
         retrieval_key=retrieval_key,
         config=config,
         code=scoring_code,
     )
     scoring_path = cache_path_for("score_candidates", scoring_key)
-    stage_cache_status["score_candidates"] = {"used": 0, "path": str(scoring_path), "key": scoring_key}
+    stage_cache_status["score_candidates"] = make_stage_cache_status(scoring_path, scoring_key, enabled=cache_enabled)
 
     print("scoring candidate pairs")
     dedupe_pipeline.dev_log("stage start: score_candidates")
 
     def score_candidates_action():
-        return dedupe_pipeline.score_candidate_pairs(
+        cached = read_cache_payload(scoring_path, enabled=cache_enabled)
+        if cached is not None:
+            stage_cache_status["score_candidates"]["used"] = 1
+            return (
+                candidate_pairs_from_records(cached.get("candidate_pairs") or []),
+                int(cached.get("scored_candidate_pairs") or 0),
+            )
+        candidate_pairs, scored_candidate_pairs = dedupe_pipeline.score_candidate_pairs(
             products,
             pair_blocks,
             config=config,
             normalization_key=cache_key,
         )
+        write_cache_payload(
+            scoring_path,
+            metadata={
+                "stage": "score_candidates",
+                "retrieval_key": retrieval_key,
+                "config": asdict(config),
+                "code": scoring_code,
+            },
+            payload={
+                "candidate_pairs": candidate_pairs_to_records(candidate_pairs),
+                "scored_candidate_pairs": scored_candidate_pairs,
+            },
+            enabled=cache_enabled,
+        )
+        return candidate_pairs, scored_candidate_pairs
 
-    candidate_pairs, scored_candidate_pairs = run_stage("score_candidates", score_candidates_action, items=len(pair_blocks))
+    candidate_pairs, scored_candidate_pairs = run_stage(
+        "score_candidates",
+        score_candidates_action,
+        items=len(pair_blocks),
+    )
 
     clustering_code = code_fingerprint("pipeline.py", "clustering.py")
     cluster_key = clustering_cache_key(scoring_key=scoring_key, code=clustering_code)
     cluster_path = cache_path_for("cluster", cluster_key)
-    stage_cache_status["cluster"] = {"used": 0, "path": str(cluster_path), "key": cluster_key}
+    stage_cache_status["cluster"] = make_stage_cache_status(cluster_path, cluster_key, enabled=cache_enabled)
 
     def cluster_action():
+        cached = read_cache_payload(cluster_path, enabled=cache_enabled)
+        if cached is not None:
+            stage_cache_status["cluster"]["used"] = 1
+            clusters = clusters_to_records(cached.get("clusters") or {})
+            cluster_stats = {str(key): int(value) for key, value in dict(cached.get("cluster_stats") or {}).items()}
+            return clusters, cluster_stats, invert_clusters(clusters)
         dedupe_pipeline.dev_log("stage start: cluster")
         clusters, cluster_stats = dedupe_pipeline.build_clusters(products, candidate_pairs, id_to_index)
+        write_cache_payload(
+            cluster_path,
+            metadata={
+                "stage": "cluster",
+                "scoring_key": scoring_key,
+                "code": clustering_code,
+            },
+            payload={
+                "clusters": clusters_to_records(clusters),
+                "cluster_stats": cluster_stats,
+            },
+            enabled=cache_enabled,
+        )
         return clusters, cluster_stats, invert_clusters(clusters)
 
     clusters, cluster_stats, source_to_cluster = run_stage("cluster", cluster_action, items=len(candidate_pairs))
@@ -1278,6 +1681,7 @@ def run_pipeline(
         elapsed_seconds=elapsed_seconds,
     )
     report["run_id"] = output_path.name
+    report["model_id"] = _model_id_from_ml_path(config.ml_model_path)
     report["run_output_dir"] = str(output_path)
     report["normalization_cache"] = {
         "path": str(cache_path),

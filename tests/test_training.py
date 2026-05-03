@@ -4,7 +4,23 @@ import csv
 import json
 from pathlib import Path
 
-from cartsy_dedupe.training import augment_training_data, train_logistic_regression
+import numpy as np
+
+from cartsy_dedupe.normalize import normalize_row
+from cartsy_dedupe.training import (
+    PairExample,
+    augment_training_data,
+    compute_training_semantic_similarities,
+    load_training_embedding_cache_entries,
+    select_threshold_row,
+    train_logistic_regression,
+    training_embedding_text,
+)
+from cartsy_dedupe.utils.pipeline_cache import (
+    embedding_text_hash,
+    read_embedding_cache,
+    write_embedding_cache,
+)
 
 
 def write_csv(path: Path, rows: list[dict[str, str]], columns: list[str]) -> None:
@@ -99,3 +115,252 @@ def test_train_logistic_regression_writes_eval_artifacts(tmp_path: Path) -> None
     assert "cv_thresholds" in metrics
     assert "threshold_selection_method" in metrics
     assert 0.0 < metrics["threshold"] < 1.0
+
+
+def test_select_threshold_row_honors_precision_floor() -> None:
+    curve = [
+        {"threshold": 0.70, "precision": 0.90, "recall": 0.95, "f1": 0.924, "tp": 95, "fp": 10, "fn": 5},
+        {"threshold": 0.80, "precision": 0.98, "recall": 0.80, "f1": 0.881, "tp": 80, "fp": 2, "fn": 20},
+        {"threshold": 0.90, "precision": 1.00, "recall": 0.20, "f1": 0.333, "tp": 20, "fp": 0, "fn": 80},
+    ]
+
+    selected = select_threshold_row(curve, target_precision=0.97)
+
+    assert selected["threshold"] == 0.80
+
+
+def test_select_threshold_row_prefers_lower_threshold_on_metric_tie() -> None:
+    curve = [
+        {"threshold": 0.80, "precision": 1.00, "recall": 0.84, "f1": 0.91, "tp": 84, "fp": 0, "fn": 16},
+        {"threshold": 0.99, "precision": 1.00, "recall": 0.84, "f1": 0.91, "tp": 84, "fp": 0, "fn": 16},
+    ]
+
+    selected = select_threshold_row(curve, target_precision=0.995)
+
+    assert selected["threshold"] == 0.80
+
+
+def test_select_threshold_row_avoids_degenerate_low_recall_precision_floor() -> None:
+    curve = [
+        {"threshold": 0.38, "precision": 0.94, "recall": 0.96, "f1": 0.95, "tp": 96, "fp": 6, "fn": 4},
+        {"threshold": 0.97, "precision": 1.00, "recall": 0.01, "f1": 0.02, "tp": 1, "fp": 0, "fn": 99},
+    ]
+
+    selected = select_threshold_row(curve, target_precision=0.97, min_recall=0.50)
+
+    assert selected["threshold"] == 0.38
+
+
+def test_training_embeddings_reuse_product_cache(tmp_path: Path, monkeypatch) -> None:
+    products = [normalize_row(row) for row in product_rows()[:2]]
+    cache_root = tmp_path / "cache"
+    cache_path = cache_root / "embeddings" / "all-products" / "existing.json"
+    write_embedding_cache(
+        cache_path,
+        entries={
+            products[0].source_id: {
+                "text_hash": embedding_text_hash(training_embedding_text(products[0])),
+                "embedding": [1.0, 0.0, 0.0],
+            }
+        },
+        metadata={"stage": "product_embeddings"},
+    )
+    calls: list[list[str]] = []
+
+    class FakeEmbedder:
+        def __init__(self, *, provider: str | None = None, model: str | None = None) -> None:
+            pass
+
+        def embed_texts(self, texts: list[str]):
+            calls.append(texts)
+
+            class Result:
+                embeddings = [[0.0, 1.0, 0.0] for _ in texts]
+                usage = None
+
+            return Result()
+
+    monkeypatch.setenv("CARTSY_PIPELINE_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv("CARTSY_EMBEDDING_DIMENSIONS", "3")
+    monkeypatch.setattr("cartsy_dedupe.training.EmbeddingProvider", FakeEmbedder)
+
+    semantic = compute_training_semantic_similarities(
+        products,
+        [PairExample(left_index=0, right_index=1, label=1, block_keys=set())],
+        tmp_path,
+        "sentence-transformers",
+        "sentence-transformers/all-MiniLM-L6-v2",
+    )
+
+    assert len(calls) == 1
+    assert calls[0] == [training_embedding_text(products[1])]
+    assert semantic[(0, 1)] == 0.0
+    manifest = json.loads((tmp_path / "training_embedding_products.json").read_text(encoding="utf-8"))
+    assert manifest["cache_hits"] == 1
+    assert manifest["created_embeddings"] == 1
+    assert read_embedding_cache(Path(manifest["cache_path"]))
+
+
+def test_training_embeddings_reuse_matrix_cache_without_provider_call(tmp_path: Path, monkeypatch) -> None:
+    products = [normalize_row(row) for row in product_rows()[:2]]
+    cache_root = tmp_path / "cache"
+    cache_dir = cache_root / "embeddings" / "all-products"
+    cache_dir.mkdir(parents=True)
+    stem = "embeddings_norm-key_20260430_192710"
+    np.save(cache_dir / f"{stem}.npy", np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64))
+    (cache_dir / f"{stem}.source_id_to_index.json").write_text(
+        json.dumps({products[0].source_id: 0, products[1].source_id: 1}),
+        encoding="utf-8",
+    )
+
+    class FakeEmbedder:
+        def __init__(self, *, provider: str | None = None, model: str | None = None) -> None:
+            pass
+
+        def embed_texts(self, texts: list[str]):
+            raise AssertionError("expected matrix cached embeddings to skip provider calls")
+
+    monkeypatch.setenv("CARTSY_PIPELINE_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv("CARTSY_EMBEDDING_DIMENSIONS", "3")
+    monkeypatch.setattr("cartsy_dedupe.training.EmbeddingProvider", FakeEmbedder)
+
+    semantic = compute_training_semantic_similarities(
+        products,
+        [PairExample(left_index=0, right_index=1, label=1, block_keys=set())],
+        tmp_path,
+        "sentence-transformers",
+        "sentence-transformers/all-MiniLM-L6-v2",
+        normalization_key="norm-key",
+    )
+
+    assert semantic[(0, 1)] == 0.0
+    manifest = json.loads((tmp_path / "training_embedding_products.json").read_text(encoding="utf-8"))
+    assert manifest["matrix_cache_hits"] == 2
+    assert manifest["created_embeddings"] == 0
+    assert manifest["matrix_cache_path"].endswith(f"{stem}.npy")
+
+
+def test_training_embeddings_reuse_older_matrix_cache_for_augmented_rows(tmp_path: Path, monkeypatch) -> None:
+    products = [normalize_row(row) for row in product_rows()[:3]]
+    cache_root = tmp_path / "cache"
+    cache_dir = cache_root / "embeddings" / "all-products"
+    cache_dir.mkdir(parents=True)
+    stem = "embeddings_original-key_20260430_192710"
+    np.save(cache_dir / f"{stem}.npy", np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64))
+    (cache_dir / f"{stem}.source_id_to_index.json").write_text(
+        json.dumps({products[0].source_id: 0, products[1].source_id: 1}),
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    class FakeEmbedder:
+        def __init__(self, *, provider: str | None = None, model: str | None = None) -> None:
+            pass
+
+        def embed_texts(self, texts: list[str]):
+            calls.append(texts)
+
+            class Result:
+                embeddings = [[0.0, 0.0, 1.0] for _ in texts]
+                usage = None
+
+            return Result()
+
+    monkeypatch.setenv("CARTSY_PIPELINE_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv("CARTSY_EMBEDDING_DIMENSIONS", "3")
+    monkeypatch.setattr("cartsy_dedupe.training.EmbeddingProvider", FakeEmbedder)
+
+    semantic = compute_training_semantic_similarities(
+        products,
+        [
+            PairExample(left_index=0, right_index=1, label=1, block_keys=set()),
+            PairExample(left_index=0, right_index=2, label=0, block_keys=set()),
+        ],
+        tmp_path,
+        "sentence-transformers",
+        "sentence-transformers/all-MiniLM-L6-v2",
+        normalization_key="augmented-key",
+    )
+
+    assert calls == [[training_embedding_text(products[2])]]
+    assert semantic[(0, 1)] == 0.0
+    assert semantic[(0, 2)] == 0.0
+    manifest = json.loads((tmp_path / "training_embedding_products.json").read_text(encoding="utf-8"))
+    assert manifest["fallback_matrix_cache_hits"] == 2
+    assert manifest["created_embeddings"] == 1
+    assert manifest["matrix_cache_path"].endswith(f"{stem}.npy")
+
+
+def test_training_embedding_cache_ignores_wrong_dimensions(tmp_path: Path, monkeypatch) -> None:
+    cache_root = tmp_path / "cache"
+    cache_path = cache_root / "embeddings" / "all-products" / "mixed.json"
+    write_embedding_cache(
+        cache_path,
+        entries={
+            "ok": {"text_hash": "x", "embedding": [1.0, 2.0, 3.0]},
+            "wrong": {"text_hash": "y", "embedding": [1.0, 2.0]},
+        },
+        metadata={"stage": "product_embeddings"},
+    )
+    monkeypatch.setenv("CARTSY_PIPELINE_CACHE_DIR", str(cache_root))
+
+    entries = load_training_embedding_cache_entries(expected_dimensions=3)
+
+    assert "ok" in entries
+    assert "wrong" not in entries
+
+
+def test_openai_training_cache_ignores_stale_env_dimension(tmp_path: Path, monkeypatch) -> None:
+    products = [normalize_row(row) for row in product_rows()[:2]]
+    cache_root = tmp_path / "cache"
+    cache_path = cache_root / "embeddings" / "all-products" / "mixed.json"
+    good_embedding = [1.0] + [0.0] * 1535
+    stale_embedding = [1.0] + [0.0] * 383
+    write_embedding_cache(
+        cache_path,
+        entries={
+            products[0].source_id: {
+                "text_hash": embedding_text_hash(training_embedding_text(products[0])),
+                "embedding": stale_embedding,
+            },
+            products[1].source_id: {
+                "text_hash": embedding_text_hash(training_embedding_text(products[1])),
+                "embedding": good_embedding,
+            },
+        },
+        metadata={
+            "stage": "training_product_embeddings",
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+            "embedding_dimensions": 384,
+        },
+    )
+    calls: list[list[str]] = []
+
+    class FakeEmbedder:
+        def __init__(self, *, provider: str | None = None, model: str | None = None) -> None:
+            pass
+
+        def embed_texts(self, texts: list[str]):
+            calls.append(texts)
+
+            class Result:
+                embeddings = [[0.0, 1.0] + [0.0] * 1534 for _ in texts]
+                usage = None
+
+            return Result()
+
+    monkeypatch.setenv("CARTSY_PIPELINE_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv("CARTSY_EMBEDDING_DIMENSIONS", "384")
+    monkeypatch.setattr("cartsy_dedupe.training.EmbeddingProvider", FakeEmbedder)
+
+    semantic = compute_training_semantic_similarities(
+        products,
+        [PairExample(left_index=0, right_index=1, label=1, block_keys=set())],
+        tmp_path,
+        "openai",
+        "text-embedding-3-small",
+    )
+
+    assert calls == [[training_embedding_text(products[0])]]
+    assert semantic[(0, 1)] == 0.0

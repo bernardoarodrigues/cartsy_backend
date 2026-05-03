@@ -31,7 +31,9 @@ def test_api_lists_runs_and_summary(tmp_path: Path) -> None:
 
     runs = client.get("/runs")
     assert runs.status_code == 200
-    assert runs.json()["runs"][0]["run_id"] == "run_20260430_150405"
+    body = runs.json()
+    assert body["runs"][0]["run_id"] == "run_20260430_150405"
+    assert body["runs"][0]["model_id"] is None
 
     summary = client.get("/runs/run_20260430_150405/summary")
     assert summary.status_code == 200

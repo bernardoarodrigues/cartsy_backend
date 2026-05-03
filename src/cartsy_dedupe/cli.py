@@ -123,7 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-precision",
         type=float,
         default=0.97,
-        help="Stored in metrics for reference. No longer drives threshold selection (see --cv-folds).",
+        help="Precision floor for selecting the saved merge threshold.",
+    )
+    train.add_argument(
+        "--min-recall",
+        type=float,
+        default=0.50,
+        help="Recall guard for threshold selection; avoids thresholds that satisfy precision by merging almost nothing.",
     )
     train.add_argument("--random-state", type=int, default=42)
     train.add_argument("--max-positive-pairs", type=int, default=50_000)
@@ -288,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
                 ground_truth_path=args.ground_truth,
                 output_dir=args.output_dir,
                 target_precision=args.target_precision,
+                min_recall=args.min_recall,
                 random_state=args.random_state,
                 max_positive_pairs=args.max_positive_pairs,
                 max_hard_negative_pairs=args.max_hard_negative_pairs,
