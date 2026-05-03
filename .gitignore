@@ -12,8 +12,8 @@ outputs/*
 # Keep small sample fixtures and sample deliverables commit-friendly.
 !data/
 !models/
-!models/train_20260502_final_submission/
-!models/train_20260502_final_submission/**
+!models/train_20260502_130136_final_submission/
+!models/train_20260502_130136_final_submission/**
 !outputs/
 
 .env

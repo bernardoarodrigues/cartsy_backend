@@ -30,7 +30,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 ```
 
-The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles. The committed final model is `models/train_20260502_final_submission/cartsy_logreg.joblib`.
+The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles. The committed final model is `models/train_20260502_130136_final_submission/cartsy_logreg.joblib`.
 
 ## 1. Ingest And Normalize
 
@@ -65,65 +65,65 @@ Trade-off: this avoids embedding truly unrelated products, but logistic regressi
 
 `src/cartsy_dedupe/features.py` builds the stable pairwise feature contract. `DEFAULT_FEATURE_COLUMNS` is the model contract: adding, removing, or reordering columns invalidates existing `.joblib` bundles and requires retraining.
 
-| Feature | Meaning |
-|---|---|
-| `same_retailer` | 1 if both products come from the same retailer |
-| `brand_exact` | 1 if normalized brand strings are identical |
-| `brand_fuzzy` | Levenshtein ratio of normalized brand strings |
-| `title_token_set` | Token-set ratio of normalized product titles |
-| `title_partial` | Partial ratio of normalized product titles |
-| `category_exact` | 1 if leaf category segments are identical |
-| `model_token_jaccard` | Jaccard similarity of extracted alphanumeric model tokens |
-| `salient_token_jaccard` | Jaccard similarity of title tokens after removing brand, category, stopwords, and digit tokens |
-| `size_match` | 1 if both products have an unambiguous size and they are equivalent |
-| `size_conflict` | 1 if both products have an unambiguous size and they differ |
-| `pack_match` | 1 if both products have an explicit pack count and they agree |
-| `pack_conflict` | 1 if both products have an explicit pack count and they differ |
-| `price_ratio_diff` | Absolute relative price difference — `|p1-p2| / max(p1,p2)` |
-| `price_both_present` | 1 if both products have a non-null price |
-| `identifier_any` | 1 if any shared identifier was found (in-product or from retrieval evidence) |
-| `exact_global_id` | 1 if a shared EAN, GTIN, or UPC was found in retrieval evidence |
-| `exact_ean` | 1 if product-level EAN values agree |
-| `exact_gtin` | 1 if product-level GTIN values agree |
-| `exact_upc` | 1 if product-level UPC values agree |
-| `exact_asin` | 1 if ASIN values agree (product-level or retrieval evidence) |
-| `exact_retailer_sku` | 1 if a same-retailer SKU key was found in retrieval evidence |
-| `exact_canonical_url` | 1 if a canonical product URL key was found in retrieval evidence |
-| `exact_key_count` | Number of distinct exact identifier types matched |
-| `exact_evidence_strength` | Scalar strength of strongest exact evidence (1.0 for global ID, 0.92 for ASIN, …) |
-| `exact_sku_same_retailer` | 1 if SKU matches within the same retailer |
-| `exact_sku_cross_retailer` | 1 if SKU matches across different retailers |
-| `rule_certain_match` | 1 if `CERTAIN_MATCH` fired (EAN/GTIN/UPC/ASIN/URL) |
-| `rule_strong_match` | 1 if `STRONG_MATCH` fired (retailer SKU or brand+title≥0.95 with model overlap) |
-| `rule_likely_match` | 1 if `LIKELY_MATCH` fired (brand+title≥0.85+size, or brand+model overlap+title≥0.70) |
-| `rule_certain_block` | 1 if `CERTAIN_BLOCK` fired (hard contradiction detected) |
-| `lexical_sim` | Normalized FTS rank from the lexical retrieval layer |
-| `trigram_sim` | Trigram title similarity from the trigram retrieval layer |
-| `semantic_sim` | Cosine similarity of dense product embeddings |
-| `retrieval_layer_count` | Number of distinct retrieval layers (exact/lexical/trigram/vector) that surfaced the pair |
-| `variant_conflict` | 1 if same brand but salient title tokens are disjoint |
-| `variant_token_conflict` | 1 if explicit variant tokens disagree, such as shade codes or color words |
+| Feature                           | Meaning                                                                                             |
+| --------------------------------- | --------------------------------------------------------------------------------------------------- | ----- | ------------- |
+| `same_retailer`                   | 1 if both products come from the same retailer                                                      |
+| `brand_exact`                     | 1 if normalized brand strings are identical                                                         |
+| `brand_fuzzy`                     | Levenshtein ratio of normalized brand strings                                                       |
+| `title_token_set`                 | Token-set ratio of normalized product titles                                                        |
+| `title_partial`                   | Partial ratio of normalized product titles                                                          |
+| `category_exact`                  | 1 if leaf category segments are identical                                                           |
+| `model_token_jaccard`             | Jaccard similarity of extracted alphanumeric model tokens                                           |
+| `salient_token_jaccard`           | Jaccard similarity of title tokens after removing brand, category, stopwords, and digit tokens      |
+| `size_match`                      | 1 if both products have an unambiguous size and they are equivalent                                 |
+| `size_conflict`                   | 1 if both products have an unambiguous size and they differ                                         |
+| `pack_match`                      | 1 if both products have an explicit pack count and they agree                                       |
+| `pack_conflict`                   | 1 if both products have an explicit pack count and they differ                                      |
+| `price_ratio_diff`                | Absolute relative price difference — `                                                              | p1-p2 | / max(p1,p2)` |
+| `price_both_present`              | 1 if both products have a non-null price                                                            |
+| `identifier_any`                  | 1 if any shared identifier was found (in-product or from retrieval evidence)                        |
+| `exact_global_id`                 | 1 if a shared EAN, GTIN, or UPC was found in retrieval evidence                                     |
+| `exact_ean`                       | 1 if product-level EAN values agree                                                                 |
+| `exact_gtin`                      | 1 if product-level GTIN values agree                                                                |
+| `exact_upc`                       | 1 if product-level UPC values agree                                                                 |
+| `exact_asin`                      | 1 if ASIN values agree (product-level or retrieval evidence)                                        |
+| `exact_retailer_sku`              | 1 if a same-retailer SKU key was found in retrieval evidence                                        |
+| `exact_canonical_url`             | 1 if a canonical product URL key was found in retrieval evidence                                    |
+| `exact_key_count`                 | Number of distinct exact identifier types matched                                                   |
+| `exact_evidence_strength`         | Scalar strength of strongest exact evidence (1.0 for global ID, 0.92 for ASIN, …)                   |
+| `exact_sku_same_retailer`         | 1 if SKU matches within the same retailer                                                           |
+| `exact_sku_cross_retailer`        | 1 if SKU matches across different retailers                                                         |
+| `rule_certain_match`              | 1 if `CERTAIN_MATCH` fired (EAN/GTIN/UPC/ASIN/URL)                                                  |
+| `rule_strong_match`               | 1 if `STRONG_MATCH` fired (retailer SKU or brand+title≥0.95 with model overlap)                     |
+| `rule_likely_match`               | 1 if `LIKELY_MATCH` fired (brand+title≥0.85+size, or brand+model overlap+title≥0.70)                |
+| `rule_certain_block`              | 1 if `CERTAIN_BLOCK` fired (hard contradiction detected)                                            |
+| `lexical_sim`                     | Normalized FTS rank from the lexical retrieval layer                                                |
+| `trigram_sim`                     | Trigram title similarity from the trigram retrieval layer                                           |
+| `semantic_sim`                    | Cosine similarity of dense product embeddings                                                       |
+| `retrieval_layer_count`           | Number of distinct retrieval layers (exact/lexical/trigram/vector) that surfaced the pair           |
+| `variant_conflict`                | 1 if same brand but salient title tokens are disjoint                                               |
+| `variant_token_conflict`          | 1 if explicit variant tokens disagree, such as shade codes or color words                           |
 | `variant_token_presence_mismatch` | 1 if only one side has an explicit variant token while titles otherwise strongly contain each other |
-| `kit_standalone_conflict` | 1 if one side is a kit/multi-component product and the other is a standalone item |
-| `kit_count_conflict` | 1 if both sides are kits but explicit product/item counts differ |
-| `kit_component_conflict` | 1 if both sides are kits but their parsed component terms do not overlap |
-| `product_form_conflict` | 1 if explicit product form terms disagree, such as shampoo vs conditioner |
-| `weak_exact_contradiction` | 1 if shared weak identifier evidence coexists with explicit identity contradictions |
-| `contradiction_count` | Count of contradiction feature families active for the pair |
-| `contradiction_strength` | Max contradiction strength, used for diagnostics and evidence penalties |
-| `feature_coverage_count` | Count of indicator features carrying non-zero signal; low values flag sparse-evidence pairs |
+| `kit_standalone_conflict`         | 1 if one side is a kit/multi-component product and the other is a standalone item                   |
+| `kit_count_conflict`              | 1 if both sides are kits but explicit product/item counts differ                                    |
+| `kit_component_conflict`          | 1 if both sides are kits but their parsed component terms do not overlap                            |
+| `product_form_conflict`           | 1 if explicit product form terms disagree, such as shampoo vs conditioner                           |
+| `weak_exact_contradiction`        | 1 if shared weak identifier evidence coexists with explicit identity contradictions                 |
+| `contradiction_count`             | Count of contradiction feature families active for the pair                                         |
+| `contradiction_strength`          | Max contradiction strength, used for diagnostics and evidence penalties                             |
+| `feature_coverage_count`          | Count of indicator features carrying non-zero signal; low values flag sparse-evidence pairs         |
 
 ## 5. Rule Evaluation And Merge Decision
 
 Each candidate pair first passes through an ordered condition chain in `src/cartsy_dedupe/scoring.py`. The chain returns one of five certainty levels:
 
-| Level | What it means | Pipeline action |
-|---|---|---|
-| `CERTAIN_BLOCK` | Hard contradiction (conflicting global ID, brand, size, or pack count) | score=0.0, skip ML |
-| `CERTAIN_MATCH` | Exact global ID (EAN/GTIN/UPC), ASIN, or trusted canonical URL | score=1.0, skip ML |
-| `STRONG_MATCH` | Same-retailer SKU, or brand+title≥0.95 with model overlap | ML scores pair; certainty is a feature |
-| `LIKELY_MATCH` | Brand+title≥0.85+size match, or brand+model overlap+title≥0.70 | ML scores pair; certainty is a feature |
-| `UNCERTAIN` | No clear signal either way | ML scores pair; certainty is a feature |
+| Level           | What it means                                                          | Pipeline action                        |
+| --------------- | ---------------------------------------------------------------------- | -------------------------------------- |
+| `CERTAIN_BLOCK` | Hard contradiction (conflicting global ID, brand, size, or pack count) | score=0.0, skip ML                     |
+| `CERTAIN_MATCH` | Exact global ID (EAN/GTIN/UPC), ASIN, or trusted canonical URL         | score=1.0, skip ML                     |
+| `STRONG_MATCH`  | Same-retailer SKU, or brand+title≥0.95 with model overlap              | ML scores pair; certainty is a feature |
+| `LIKELY_MATCH`  | Brand+title≥0.85+size match, or brand+model overlap+title≥0.70         | ML scores pair; certainty is a feature |
+| `UNCERTAIN`     | No clear signal either way                                             | ML scores pair; certainty is a feature |
 
 For pairs that reach the ML model:
 
@@ -169,11 +169,11 @@ rejected at startup instead of silently scoring with the wrong feature order.
 The committed final submission bundle lives at:
 
 ```text
-models/train_20260502_final_submission/cartsy_logreg.joblib
-models/train_20260502_final_submission/metrics.json
-models/train_20260502_final_submission/feature_coefficients.csv
-models/train_20260502_final_submission/threshold_curve.csv
-models/train_20260502_final_submission/calibration_threshold_curve.csv
+models/train_20260502_130136_final_submission/cartsy_logreg.joblib
+models/train_20260502_130136_final_submission/metrics.json
+models/train_20260502_130136_final_submission/feature_coefficients.csv
+models/train_20260502_130136_final_submission/threshold_curve.csv
+models/train_20260502_130136_final_submission/calibration_threshold_curve.csv
 ```
 
 The training path has two commands:

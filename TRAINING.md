@@ -109,7 +109,7 @@ filtered_positive_contradictions.csv
 training_embedding_products.json
 ```
 
-The committed final-submission subset keeps the model and compact reviewer diagnostics under `models/train_20260502_final_submission/`.
+The committed final-submission subset keeps the model and compact reviewer diagnostics under `models/train_20260502_130136_final_submission/`.
 
 `metrics.json` records the chosen threshold, target precision, recall guard, CV thresholds, calibration status, pair counts, filtered contradiction positives, test average precision, test precision/recall/F1, embedding provider, and artifact list.
 
@@ -152,7 +152,7 @@ The evaluator writes `labeled_evaluation.json` with overall precision/recall/F1 
 
 ## Reviewer Checklist
 
-- Confirm `models/train_20260502_final_submission/metrics.json` and `feature_coefficients.csv` are present.
+- Confirm `models/train_20260502_130136_final_submission/metrics.json` and `feature_coefficients.csv` are present.
 - Confirm the model threshold and feature columns match `DEFAULT_FEATURE_COLUMNS`.
 - Inspect `false_positives.csv`, `false_negatives.csv`, and `top_risky_clusters.csv` after any retraining.
 - Run `evaluate-run` against the full labeled dataset before changing runtime thresholds.
