@@ -69,6 +69,16 @@ def test_pair_features_include_identifier_and_variant_conflicts() -> None:
     assert hard_contradiction_features(features)
 
 
+def test_pair_features_use_shared_portuguese_and_english_color_vocab() -> None:
+    left = product(id="1", prod_name="Cetaphil Batom Terracota 30ml", sku="SHARED")
+    right = product(id="2", prod_name="Cetaphil Batom Lavender 30ml", sku="SHARED")
+
+    features = build_pair_features(left, right, {"exact:retailer_sku:amazon_br:SHARED"})
+
+    assert features["variant_token_conflict"] == 1.0
+    assert features["weak_exact_contradiction"] == 1.0
+
+
 def test_pair_features_expose_one_sided_variant_token_mismatch() -> None:
     left = product(
         id="1",

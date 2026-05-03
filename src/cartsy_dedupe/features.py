@@ -19,6 +19,7 @@ import re
 from collections.abc import Mapping
 
 from cartsy_dedupe.attributes import sizes_equivalent
+from cartsy_dedupe.color_terms import COLOR_VARIANT_TERMS
 from cartsy_dedupe.config import GLOBAL_IDENTIFIER_KEYS, MARKETPLACE_IDENTIFIER_KEYS
 from cartsy_dedupe.schemas import NormalizedProduct
 from cartsy_dedupe.scoring import MatchCertainty, RuleDecision
@@ -85,43 +86,6 @@ PRODUCT_FORM_TERMS = {
     "serum",
     "shampoo",
     "spray",
-}
-
-COLOR_VARIANT_TERMS = {
-    "amarelo",
-    "azul",
-    "bege",
-    "black",
-    "blonde",
-    "blue",
-    "bronze",
-    "branco",
-    "brown",
-    "claro",
-    "cobre",
-    "dourado",
-    "escuro",
-    "gold",
-    "grafite",
-    "gray",
-    "green",
-    "grey",
-    "ivory",
-    "lilac",
-    "loiro",
-    "marrom",
-    "natural",
-    "nude",
-    "pink",
-    "preto",
-    "purple",
-    "red",
-    "rosa",
-    "roxo",
-    "silver",
-    "verde",
-    "vermelho",
-    "white",
 }
 
 VARIANT_WORD_PREFIXES = (

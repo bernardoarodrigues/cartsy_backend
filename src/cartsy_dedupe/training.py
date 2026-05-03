@@ -32,6 +32,7 @@ import numpy as np
 from tqdm import tqdm
 from dotenv import load_dotenv
 
+from cartsy_dedupe.color_terms import TRAINING_SHADE_WORDS
 from cartsy_dedupe.embeddings import (
     EmbeddingProvider,
     configured_embedding_dimensions,
@@ -80,7 +81,6 @@ PRODUCT_COLUMNS = [
 TRUTH_COLUMNS = ["source_id", "deduped_id"]
 SIZE_RE = re.compile(r"(?P<value>\d+(?:[,.]\d+)?)\s*(?P<unit>ml|l|g|kg|unidades|unidade|pcs|pecas|peças|oz)\b", re.I)
 PACK_RE = re.compile(r"\b(?:pacote\s+de|pack\s+of|kit\s+com|com)\s*(?P<count>\d+)\b|\b(?P<count2>\d+)\s*(?:unidades|unidade|pcs|pecas|peças)\b", re.I)
-SHADE_WORDS = ["Preto", "Branco", "Azul", "Rosa", "Prata", "Dourado", "Nude", "Claro", "Escuro", "Natural"]
 
 logger = logging.getLogger(__name__)
 
@@ -1281,7 +1281,7 @@ def apply_variant_conflict(row: dict[str, str], rng: random.Random) -> str:
         row["prod_name"] = SIZE_RE.sub(replacement, title, count=1) if SIZE_RE.search(title) else f"{title} {replacement}".strip()
         row["dimension"] = replacement
         return f"size:{replacement}"
-    shade = rng.choice(SHADE_WORDS)
+    shade = rng.choice(TRAINING_SHADE_WORDS)
     row["prod_name"] = f"{title} Cor {shade}".strip()
     return f"shade:{shade}"
 
