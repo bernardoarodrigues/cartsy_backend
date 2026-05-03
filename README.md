@@ -14,7 +14,7 @@ cp .env.example .env
 docker compose up -d postgres
 ```
 
-`requirements.txt` installs the package in editable mode plus runtime/test dependencies. The default `.env.example` points at the committed final model:
+The default `.env.example` points at the committed final model:
 
 ```text
 CARTSY_ML_MODEL_PATH=models/train_20260502_130136_final_submission/cartsy_logreg.joblib
