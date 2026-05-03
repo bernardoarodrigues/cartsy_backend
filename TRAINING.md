@@ -33,7 +33,8 @@ The tiny committed `data/products_first20.csv` is only a smoke fixture. It is no
   --output-ground-truth data/ground_truth_merged_augmented.csv \
   --output-manifest data/augmentation_manifest_merged.csv \
   --duplicate-samples 5000 \
-  --hard-negative-samples 1000
+  --hard-negative-samples 1000 \
+  --seed 42
 ```
 
 The augmenter creates two kinds of rows:
@@ -74,7 +75,7 @@ When `--use-embeddings` is enabled, training computes `semantic_sim` for candida
 .venv/bin/cartsy-dedupe train-model \
   --products data/dataset_merged_augmented.csv \
   --ground-truth data/ground_truth_merged_augmented.csv \
-  --output-dir models/train_YYYYMMDD_final_submission \
+  --output-dir models/train_YYYYMMDD \
   --target-precision 0.97 \
   --min-recall 0.80 \
   --cv-folds 5 \
