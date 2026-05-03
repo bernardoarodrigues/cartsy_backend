@@ -1,5 +1,7 @@
 # Cartsy Product Deduplication Pipeline
 
+![Deduped groups](diagrams/deduped-groups.jpeg)
+
 Production-shaped product entity resolution for the Cartsy product-data challenge. The project ingests messy product CSVs, normalizes them into a stable schema, retrieves candidate duplicate pairs with Postgres exact/FTS/trigram/vector layers, scores uncertain pairs with a calibrated logistic-regression model, and writes queryable deduped-product artifacts.
 
 The implementation is intentionally CLI-first: reviewers can run the batch pipeline, inspect saved artifacts, query a completed run from the terminal, or start the optional read-only REST API.
