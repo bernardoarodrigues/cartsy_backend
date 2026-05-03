@@ -26,7 +26,7 @@ SIZE_RE = re.compile(
 )
 PACK_RE = re.compile(
     r"\b(?:pack\s*(?:of)?|kit|combo|dupla|trio|com|cont[eé]m)?\s*(\d{1,3})\s*"
-    r"(?:unidades|unidade|pcs|pecas|pe[cç]as|itens|items|un|x)\b",
+    r"(?:produtos|produto|unidades|unidade|pcs|pecas|pe[cç]as|itens|items|un|x)\b",
     re.I,
 )
 MODEL_RE = re.compile(r"\b(?=[a-z0-9-]*\d)(?:[a-z]{1,5}-?\d[a-z0-9-]{2,}|\d+[a-z]{1,4}\d*)\b", re.I)

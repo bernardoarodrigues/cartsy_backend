@@ -25,6 +25,111 @@ from cartsy_dedupe.scoring import MatchCertainty, RuleDecision
 from cartsy_dedupe.text import STOPWORDS, fuzz, normalize_text
 from cartsy_dedupe.utils.pipeline_sql import postgres_retrieval_features
 
+KIT_MARKERS = {
+    "kit",
+    "combo",
+    "conjunto",
+    "duo",
+    "dupla",
+    "trio",
+}
+
+KIT_COMPONENT_TERMS = {
+    "ativador",
+    "balm",
+    "condicionador",
+    "creme",
+    "finalizador",
+    "fluido",
+    "gel",
+    "geleia",
+    "leave",
+    "leite",
+    "mascara",
+    "mask",
+    "oleo",
+    "oil",
+    "pomada",
+    "protetor",
+    "refil",
+    "serum",
+    "shampoo",
+    "spray",
+    "tonico",
+}
+
+PRODUCT_FORM_TERMS = {
+    "ampola",
+    "batom",
+    "blush",
+    "condicionador",
+    "corretivo",
+    "creme",
+    "deo",
+    "desodorante",
+    "edp",
+    "edt",
+    "gel",
+    "gloss",
+    "hidratante",
+    "leave",
+    "locao",
+    "mascara",
+    "mask",
+    "oleo",
+    "parfum",
+    "perfume",
+    "po",
+    "refil",
+    "sabonete",
+    "serum",
+    "shampoo",
+    "spray",
+}
+
+COLOR_VARIANT_TERMS = {
+    "amarelo",
+    "azul",
+    "bege",
+    "black",
+    "blonde",
+    "blue",
+    "bronze",
+    "brown",
+    "cobre",
+    "dourado",
+    "gold",
+    "grafite",
+    "gray",
+    "green",
+    "grey",
+    "ivory",
+    "lilac",
+    "loiro",
+    "marrom",
+    "nude",
+    "pink",
+    "preto",
+    "purple",
+    "red",
+    "rosa",
+    "roxo",
+    "silver",
+    "verde",
+    "vermelho",
+    "white",
+}
+
+VARIANT_WORD_PREFIXES = (
+    "cor",
+    "shade",
+    "tom",
+    "tone",
+    "tono",
+)
+
+SHADE_CODE_RE = re.compile(r"\b(?:[a-z]{1,3}\d{1,3}[a-z]?|\d{1,3}[a-z]{1,3})\b", re.I)
+
 DEFAULT_FEATURE_COLUMNS = [
     "same_retailer",
     "brand_exact",
@@ -61,6 +166,14 @@ DEFAULT_FEATURE_COLUMNS = [
     "semantic_sim",
     "retrieval_layer_count",
     "variant_conflict",
+    "variant_token_conflict",
+    "kit_standalone_conflict",
+    "kit_count_conflict",
+    "kit_component_conflict",
+    "product_form_conflict",
+    "weak_exact_contradiction",
+    "contradiction_count",
+    "contradiction_strength",
     "feature_coverage_count",
 ]
 
@@ -120,6 +233,12 @@ def build_pair_features(
     pack_conflict = float(left.pack_count is not None and right.pack_count is not None and left.pack_count != right.pack_count)
     left_salient = salient_title_tokens(left)
     right_salient = salient_title_tokens(right)
+    contradiction = contradiction_features(
+        left,
+        right,
+        left_salient=left_salient,
+        right_salient=right_salient,
+    )
 
     features = {
         "same_retailer": float(left.retailer == right.retailer),
@@ -159,7 +278,7 @@ def build_pair_features(
         "trigram_sim": retrieval["trigram"],
         "semantic_sim": clamp01(semantic_sim),
         "retrieval_layer_count": retrieval_layer_count(retrieval, bool(shared_identifier_keys), semantic_sim),
-        "variant_conflict": variant_conflict(left, right, left_salient=left_salient, right_salient=right_salient),
+        **contradiction,
     }
     features["feature_coverage_count"] = float(
         sum(1 for col in _COVERAGE_INDICATORS if features.get(col, 0.0) > 0.0)
@@ -209,10 +328,17 @@ def feature_vector(features: Mapping[str, float], columns: list[str] | tuple[str
 
 
 def hard_contradiction_features(features: Mapping[str, float]) -> bool:
-    """Return True if any hard-contradiction feature (size, pack, or variant conflict) is set."""
+    """Return True if high-confidence identity contradictions are present."""
     return any(
         float(features.get(column, 0.0)) >= 1.0
-        for column in ("size_conflict", "pack_conflict", "variant_conflict")
+        for column in (
+            "size_conflict",
+            "pack_conflict",
+            "variant_token_conflict",
+            "kit_standalone_conflict",
+            "kit_count_conflict",
+            "kit_component_conflict",
+        )
     )
 
 
@@ -278,6 +404,163 @@ def variant_conflict(
     if not left_salient or not right_salient:
         return 0.0
     return float(not (left_salient & right_salient))
+
+
+def contradiction_features(
+    left: NormalizedProduct,
+    right: NormalizedProduct,
+    *,
+    left_salient: set[str] | None = None,
+    right_salient: set[str] | None = None,
+) -> dict[str, float]:
+    """Return reusable product-identity contradiction features.
+
+    These features describe general product identity concepts rather than
+    brand-specific edge cases, so the logistic-regression trainer can learn
+    negative evidence weights from shade, kit, form, and weak-exact conflicts.
+    The runtime policy only hard-blocks the highest-confidence subset.
+    """
+    left_salient = salient_title_tokens(left) if left_salient is None else left_salient
+    right_salient = salient_title_tokens(right) if right_salient is None else right_salient
+    same_brand = bool(left.brand_norm) and left.brand_norm == right.brand_norm
+
+    left_tokens = product_identity_tokens(left)
+    right_tokens = product_identity_tokens(right)
+    left_variant = variant_tokens(left, left_tokens)
+    right_variant = variant_tokens(right, right_tokens)
+    left_components = component_terms(left_tokens)
+    right_components = component_terms(right_tokens)
+    left_forms = form_terms(left_tokens)
+    right_forms = form_terms(right_tokens)
+    left_is_kit = is_kit_product(left, left_tokens, left_components)
+    right_is_kit = is_kit_product(right, right_tokens, right_components)
+
+    broad_variant_conflict = variant_conflict(
+        left,
+        right,
+        left_salient=left_salient,
+        right_salient=right_salient,
+    )
+    variant_token_conflict = float(
+        same_brand
+        and bool(left_variant)
+        and bool(right_variant)
+        and left_variant.isdisjoint(right_variant)
+    )
+    kit_standalone_conflict = float(left_is_kit != right_is_kit and bool(left_components or right_components))
+    kit_count_conflict = float(
+        left_is_kit
+        and right_is_kit
+        and left.pack_count is not None
+        and right.pack_count is not None
+        and left.pack_count != right.pack_count
+    )
+    kit_component_conflict = float(
+        left_is_kit
+        and right_is_kit
+        and bool(left_components)
+        and bool(right_components)
+        and left_components.isdisjoint(right_components)
+    )
+    product_form_conflict = float(
+        not left_is_kit
+        and not right_is_kit
+        and bool(left_forms)
+        and bool(right_forms)
+        and left_forms.isdisjoint(right_forms)
+    )
+
+    weak_exact_contradiction = float(
+        exact_identifier_present(left, right)
+        and (
+            variant_token_conflict
+            or kit_standalone_conflict
+            or kit_count_conflict
+            or kit_component_conflict
+            or (product_form_conflict and broad_variant_conflict)
+        )
+    )
+    contradiction_values = (
+        broad_variant_conflict,
+        variant_token_conflict,
+        kit_standalone_conflict,
+        kit_count_conflict,
+        kit_component_conflict,
+        product_form_conflict,
+        weak_exact_contradiction,
+    )
+    contradiction_count = float(sum(1 for value in contradiction_values if value > 0.0))
+    contradiction_strength = max(contradiction_values, default=0.0)
+
+    return {
+        "variant_conflict": broad_variant_conflict,
+        "variant_token_conflict": variant_token_conflict,
+        "kit_standalone_conflict": kit_standalone_conflict,
+        "kit_count_conflict": kit_count_conflict,
+        "kit_component_conflict": kit_component_conflict,
+        "product_form_conflict": product_form_conflict,
+        "weak_exact_contradiction": weak_exact_contradiction,
+        "contradiction_count": contradiction_count,
+        "contradiction_strength": contradiction_strength,
+    }
+
+
+def product_identity_tokens(product: NormalizedProduct) -> set[str]:
+    text = " ".join(
+        part
+        for part in (
+            product.name_raw,
+            product.name_norm,
+            product.category_leaf,
+            product.dimension_raw,
+        )
+        if part
+    )
+    return set(normalize_text(text).split())
+
+
+def variant_tokens(product: NormalizedProduct, tokens: set[str]) -> set[str]:
+    values = {token for token in tokens if token in COLOR_VARIANT_TERMS}
+    normalized_title = normalize_text(product.name_raw or product.name_norm)
+    for match in SHADE_CODE_RE.findall(normalized_title):
+        token = normalize_text(match).replace(" ", "")
+        if token and not _size_like_variant_token(token):
+            values.add(token)
+    split_tokens = normalized_title.split()
+    for index, token in enumerate(split_tokens[:-1]):
+        if token in VARIANT_WORD_PREFIXES:
+            next_token = split_tokens[index + 1]
+            if next_token not in STOPWORDS and not _size_like_variant_token(next_token):
+                values.add(next_token)
+    return values
+
+
+def _size_like_variant_token(token: str) -> bool:
+    return bool(re.fullmatch(r"\d+(?:ml|g|kg|l|oz)?", token))
+
+
+def component_terms(tokens: set[str]) -> set[str]:
+    return {token for token in tokens if token in KIT_COMPONENT_TERMS}
+
+
+def form_terms(tokens: set[str]) -> set[str]:
+    return {token for token in tokens if token in PRODUCT_FORM_TERMS}
+
+
+def is_kit_product(product: NormalizedProduct, tokens: set[str], components: set[str]) -> bool:
+    if product.pack_count is not None and product.pack_count > 1:
+        return True
+    if tokens & KIT_MARKERS:
+        return True
+    title = product.name_raw or product.name_norm
+    return "+" in title and len(components) >= 2
+
+
+def exact_identifier_present(left: NormalizedProduct, right: NormalizedProduct) -> bool:
+    return any(
+        left.identifiers.get(key) and left.identifiers.get(key) == right.identifiers.get(key)
+        for key in ("ean", "gtin", "upc", "asin", "sku")
+    )
 
 
 def retrieval_layer_count(retrieval: Mapping[str, float], has_identifier: bool, semantic_sim: float) -> float:

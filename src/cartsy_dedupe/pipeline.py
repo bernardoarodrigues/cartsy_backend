@@ -1147,7 +1147,13 @@ class DedupePipeline:
         )
         threshold = self.ml_threshold(config.merge_threshold)
 
-        if rule_decision.certainty == MatchCertainty.CERTAIN_MATCH:
+        exact_hard_contradiction = hard_contradiction_features(pair_features)
+        if rule_decision.certainty == MatchCertainty.CERTAIN_MATCH and exact_hard_contradiction:
+            ml_score, evidence_score, decision = 0.0, 0.0, "no_merge"
+            relation = "same_parent_different_variant"
+            hard_contradiction_val = 1.0
+            decision_reason = "hard_contradiction"
+        elif rule_decision.certainty == MatchCertainty.CERTAIN_MATCH:
             ml_score, evidence_score, decision = 1.0, 1.0, "merge"
             relation = "certain_match"
             hard_contradiction_val = 0.0
@@ -1324,6 +1330,10 @@ def pair_evidence_score(
         score -= 0.18
     if pair_features.get("variant_conflict", 0.0):
         score -= 0.12
+    if pair_features.get("product_form_conflict", 0.0):
+        score -= 0.08
+    if pair_features.get("contradiction_count", 0.0) >= 2.0:
+        score -= 0.08
     return max(0.0, min(1.0, score))
 
 
@@ -1360,8 +1370,15 @@ def decision_reason_labels(
     add(
         "penalty",
         feature_scores.get("hard_contradiction", 0.0) > 0.0
-        or pair_features.get("variant_conflict", 0.0) > 0.0,
+        or pair_features.get("contradiction_strength", 0.0) > 0.0,
     )
+    add("variant_conflict", pair_features.get("variant_conflict", 0.0) > 0.0)
+    add("variant_token_conflict", pair_features.get("variant_token_conflict", 0.0) > 0.0)
+    add("kit_standalone_conflict", pair_features.get("kit_standalone_conflict", 0.0) > 0.0)
+    add("kit_count_conflict", pair_features.get("kit_count_conflict", 0.0) > 0.0)
+    add("kit_component_conflict", pair_features.get("kit_component_conflict", 0.0) > 0.0)
+    add("product_form_conflict", pair_features.get("product_form_conflict", 0.0) > 0.0)
+    add("weak_exact_contradiction", pair_features.get("weak_exact_contradiction", 0.0) > 0.0)
     add(
         "brand_match",
         pair_features.get("brand_exact", 0.0) > 0.0 or feature_scores.get("brand", 0.0) >= 0.82,

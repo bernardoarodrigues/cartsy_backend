@@ -369,6 +369,44 @@ def test_score_postgres_pair_does_not_promote_same_sku_variant_title() -> None:
     assert "strong_policy:" not in pair.explanation
 
 
+def test_score_postgres_pair_blocks_exact_identifier_with_identity_contradiction() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.99),
+        "feature_columns": ["brand_exact", "title_token_set", "variant_token_conflict"],
+        "threshold": 0.84,
+    }
+    left = _product(
+        id="1",
+        brand="M·A·C",
+        sku="B08N5WRWNW",
+        prod_name="M·A·C Studio Fix Fluid SPF 15 Foundation W4 50ml",
+        dimension="50ml",
+    )
+    right = _product(
+        id="2",
+        brand="M·A·C",
+        retailer="other_shop",
+        sku="B08N5WRWNW",
+        prod_name="M·A·C Studio Fix Fluid SPF 15 Foundation C7 50ml",
+        dimension="50ml",
+    )
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"exact:asin:B08N5WRWNW", "lexical:fts:0.9500", "vector:cosine:0.9800"},
+        PipelineConfig(merge_threshold=0.84),
+        semantic_sim=0.98,
+    )
+
+    assert pair.decision == "no_merge"
+    assert pair.ml_score == 0.0
+    assert pair.decision_reason == "hard_contradiction"
+    assert pair.feature_scores["ml_variant_token_conflict"] == 1.0
+    assert "variant_token_conflict" in pair.explanation
+
+
 def test_score_postgres_pair_does_not_promote_brand_title_without_exact_sku() -> None:
     pipeline = DedupePipeline()
     pipeline.ml_model_bundle = {
