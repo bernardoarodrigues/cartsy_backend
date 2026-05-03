@@ -2,6 +2,8 @@
 
 This document explains how the supervised pairwise model is built, evaluated, and used by the runtime dedupe pipeline.
 
+![Cartsy supervised training pipeline](diagrams/training-pipeline.svg)
+
 ## Goal
 
 The model answers one narrow question: given two candidate products that retrieval already surfaced, what is the calibrated probability that they represent the same purchasable item?

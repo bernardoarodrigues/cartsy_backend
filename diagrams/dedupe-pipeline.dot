@@ -3,11 +3,11 @@ digraph DedupePipeline {
     rankdir=LR,
     bgcolor="white",
     pad="0.35",
-    nodesep="0.55",
-    ranksep="0.7",
+    nodesep="0.5",
+    ranksep="0.75",
     fontname="Helvetica",
     labelloc="t",
-    label="Cartsy Dedupe Pipeline - Main Runtime Parts"
+    label="Cartsy Runtime Dedupe Pipeline"
   ];
 
   node [
@@ -15,7 +15,7 @@ digraph DedupePipeline {
     style="rounded,filled",
     fontname="Helvetica",
     fontsize=12,
-    color="#3b4252",
+    color="#2f3a45",
     penwidth=1.4,
     margin="0.14,0.10"
   ];
@@ -29,100 +29,146 @@ digraph DedupePipeline {
   ];
 
   input [
-    label="Product CSV\ncartsy-dedupe run",
+    label="Raw Product CSV\ncartsy-dedupe run",
     fillcolor="#eaf2ff"
   ];
 
   normalize [
-    label="1. Ingest + Normalize\ncanonical fields, IDs,\nsize, pack, model tokens,\nquality flags",
+    label="1. Ingest + Normalize\ncanonical schema\nbrand/title/category/specs\nIDs, URL keys, size, pack,\nmodel tokens, quality flags",
     fillcolor="#eef7ed"
   ];
 
   postgres [
-    label="Postgres Load\nnormalized products,\nexact-key tables,\nretrieval helper tables",
+    label="Postgres Working Tables\nnormalized products\nexact keys\nretrieval helper columns\nembedding vectors",
     fillcolor="#f3efff"
   ];
 
-  candidates [
-    label="2. Candidate Retrieval\nexact keys + FTS + trigram +\ngated pgvector search",
+  exact [
+    label="2a. Exact Retrieval\nEAN/GTIN/UPC\nASIN\nsame-retailer SKU\ntrusted canonical URLs",
     fillcolor="#fff4df"
   ];
 
+  lexical [
+    label="2b. Lexical Retrieval\nbrand-aware Postgres FTS\nweighted title/category/specs",
+    fillcolor="#fff4df"
+  ];
+
+  trigram [
+    label="2c. Trigram Retrieval\npg_trgm title similarity\ninside normalized brand blocks",
+    fillcolor="#fff4df"
+  ];
+
+  vector [
+    label="2d. Evidence-Gated Vector\npgvector cosine search\nonly rows with cheap signal\nenter vector fanout",
+    fillcolor="#fff4df"
+  ];
+
+  pair_blocks [
+    label="Candidate Pair Evidence\nexact:* | lexical:fts\ntrigram:title | vector:cosine",
+    fillcolor="#fff9e8"
+  ];
+
   semantic [
-    label="3. Dense Semantic Similarity\nembed candidate-pair products,\ncompute pairwise cosine",
+    label="3. Dense Semantic Similarity\nembed candidate-pair products\ncompute pairwise cosine\nsemantic_sim",
     fillcolor="#fceff5"
   ];
 
   features [
-    label="4. Pairwise ML Features\nDEFAULT_FEATURE_COLUMNS\nretrieval, lexical, semantic,\nidentifier, price, variant signals",
+    label="4. Pairwise Feature Contract\nDEFAULT_FEATURE_COLUMNS\nidentifier, lexical, semantic,\nsize/pack/price, variant,\nkit/form contradiction signals",
     fillcolor="#edf7f7"
   ];
 
   rules [
-    label="5. Rule Evaluation\nCERTAIN_BLOCK / CERTAIN_MATCH /\nSTRONG / LIKELY / UNCERTAIN",
+    label="5. Rule Chain\nCERTAIN_BLOCK\nCERTAIN_MATCH\nSTRONG_MATCH\nLIKELY_MATCH\nUNCERTAIN",
     fillcolor="#fff0ec"
   ];
 
+  ml [
+    label="Calibrated Logistic Model\nmodels/final_submission/\ncartsy_logreg.joblib\nml_score + threshold",
+    shape=component,
+    fillcolor="#e8f7ff"
+  ];
+
+  evidence [
+    label="Evidence Score\nmulti-signal confidence\nexact + lexical + trigram\nsemantic + rule features\npenalized by contradictions",
+    fillcolor="#edf7f7"
+  ];
+
   decision [
-    label="Merge Decision\nbypass obvious exact/block cases;\notherwise calibrated logistic\nregression threshold",
+    label="Merge Policy\nhard blocks stop merges\ncertain exacts may fast-path\notherwise require:\nml_score >= threshold\nAND evidence_score >= floor",
     shape=diamond,
-    width=2.25,
-    height=1.45,
+    width=2.7,
+    height=1.75,
     fillcolor="#ffe8cc"
   ];
 
   clustering [
-    label="6. Cluster Accepted Edges\nunion connected components\nwith cluster-level guards",
+    label="6. Cluster Accepted Edges\nunion connected components\ncluster-level contradiction guards\nstable SHA1 dedupe_id",
     fillcolor="#edf1ff"
   ];
 
   artifacts [
-    label="10. Run Artifacts\nnormalized_products.parquet\ncandidate_pairs.parquet\nproduct_assignments.csv\ndedupe_groups.jsonl\nnear_miss_pairs.csv\nsummary_report.json",
+    label="Run Artifacts\nnormalized_products.parquet\ncandidate_pairs.parquet\nproduct_assignments.csv\ndedupe_groups.jsonl\nnear_miss_pairs.csv\nsummary_report.json",
     fillcolor="#f7f7f7"
   ];
 
-  api [
-    label="Artifact API\ncartsy-dedupe serve\nread-only completed-run access",
+  query [
+    label="Query Surfaces\nsearch / group / explain\nindex-artifacts / search-artifacts\noptional FastAPI server",
     fillcolor="#f2f2f2"
   ];
 
-  training [
-    label="7. Training + Evaluation\naugmented data, calibrated threshold,\ncurves, coefficients, FP/FN,\nrisky clusters",
-    fillcolor="#e8f7ff"
+  evaluation [
+    label="Post-Run Evaluation\nevaluate-run against labels\nprecision/recall/F1\nrisk slices + gates",
+    fillcolor="#f0f8ff"
   ];
 
   cache [
-    label="9. Caching Policy\nstage caches + per-layer retrieval\ncache + product embedding cache",
+    label="Caching\nnormalization\nper-layer retrieval\nscoring + clustering\nproduct embeddings",
     shape=folder,
     fillcolor="#eef0f2"
   ];
 
   config [
-    label="Runtime Config\n.env, DATABASE_URL,\nembedding model, fanout,\nML model path, cache toggles",
+    label="Runtime Config\n.env\nDATABASE_URL\nembedding backend/dimensions\nretrieval fanout\nmodel path + thresholds",
     shape=note,
     fillcolor="#f8f0ff"
   ];
 
   input -> normalize;
   normalize -> postgres;
-  postgres -> candidates;
-  candidates -> semantic [label="candidate pairs"];
+  postgres -> exact;
+  postgres -> lexical;
+  postgres -> trigram;
+  postgres -> vector;
+  exact -> pair_blocks;
+  lexical -> pair_blocks;
+  trigram -> pair_blocks;
+  vector -> pair_blocks;
+  pair_blocks -> semantic [label="candidate products"];
+  pair_blocks -> features [label="retrieval evidence"];
   semantic -> features [label="semantic_sim"];
-  candidates -> features [label="retrieval evidence"];
   features -> rules;
+  features -> ml;
+  features -> evidence;
   rules -> decision;
-  decision -> clustering [label="merge edges"];
+  ml -> decision;
+  evidence -> decision;
+  decision -> clustering [label="accepted merge edges"];
   clustering -> artifacts;
-  artifacts -> api;
+  artifacts -> query;
+  artifacts -> evaluation;
 
-  training -> decision [label="model bundle + threshold", style=dashed];
-  config -> normalize [style=dashed];
-  config -> candidates [style=dashed];
-  config -> semantic [style=dashed];
+  config -> postgres [style=dashed];
+  config -> vector [style=dashed];
+  config -> ml [style=dashed];
   config -> decision [style=dashed];
+
   cache -> normalize [style=dotted];
-  cache -> candidates [style=dotted];
+  cache -> exact [style=dotted];
+  cache -> lexical [style=dotted];
+  cache -> trigram [style=dotted];
+  cache -> vector [style=dotted];
   cache -> semantic [style=dotted];
-  cache -> features [style=dotted];
+  cache -> decision [style=dotted];
   cache -> clustering [style=dotted];
 }

@@ -1,0 +1,129 @@
+digraph TrainingPipeline {
+  graph [
+    rankdir=LR,
+    bgcolor="white",
+    pad="0.35",
+    nodesep="0.5",
+    ranksep="0.75",
+    fontname="Helvetica",
+    labelloc="t",
+    label="Cartsy Supervised Pairwise Training Pipeline"
+  ];
+
+  node [
+    shape=rect,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=12,
+    color="#2f3a45",
+    penwidth=1.4,
+    margin="0.14,0.10"
+  ];
+
+  edge [
+    fontname="Helvetica",
+    fontsize=10,
+    color="#4c566a",
+    arrowsize=0.8,
+    penwidth=1.2
+  ];
+
+  products [
+    label="Raw Products\nproducts.csv",
+    fillcolor="#eaf2ff"
+  ];
+
+  labels [
+    label="Ground Truth Labels\nground_truth_merged.csv\nsource_id -> deduped_id",
+    fillcolor="#eaf2ff"
+  ];
+
+  augment [
+    label="1. Controlled Augmentation\npositive duplicates preserve\nvariant signatures\nhard negatives inject\nweak shared IDs + conflicts",
+    fillcolor="#eef7ed"
+  ];
+
+  augmented [
+    label="Augmented Training Files\ndataset_merged_augmented.csv\nground_truth_merged_augmented.csv\naugmentation_manifest_merged.csv",
+    fillcolor="#eef7ed"
+  ];
+
+  pair_build [
+    label="2. Build Labeled Pairs\npositive same deduped_id\nhard negatives from IDs/brand/random\ncaps keep training tractable",
+    fillcolor="#fff4df"
+  ];
+
+  block_keys [
+    label="Retrieval-Like Evidence\nexact identifiers\nFTS/trigram estimates\nvector cosine block keys",
+    fillcolor="#fff9e8"
+  ];
+
+  embeddings [
+    label="Optional Embeddings\n--use-embeddings\nreuse product embedding caches\ncompute semantic_sim",
+    fillcolor="#fceff5"
+  ];
+
+  features [
+    label="3. Feature Generation\nDEFAULT_FEATURE_COLUMNS\nidentifier, lexical, semantic,\nsize/pack/price, rule,\nvariant/kit/form contradictions",
+    fillcolor="#edf7f7"
+  ];
+
+  filter [
+    label="Policy Alignment Filter\nremove positive pairs with\nhard contradiction features\nwrite filtered_positive_contradictions.csv",
+    fillcolor="#fff0ec"
+  ];
+
+  splits [
+    label="4. Train / Calibrate / Test\nstandard scaling\nlogistic regression\nisotonic calibration\nfallback for small datasets",
+    fillcolor="#f3efff"
+  ];
+
+  threshold [
+    label="5. Threshold Selection\nprecision-constrained F1\nrecall guard\nlower threshold wins ties\nrecord unmet floors explicitly",
+    shape=diamond,
+    width=2.65,
+    height=1.55,
+    fillcolor="#ffe8cc"
+  ];
+
+  diagnostics [
+    label="6. Diagnostics\nmetrics.json\nthreshold curves\nfeature coefficients\nfalse positives / negatives\ntop risky clusters",
+    fillcolor="#f7f7f7"
+  ];
+
+  bundle [
+    label="Final Model Bundle\nmodels/final_submission/\ncartsy_logreg.joblib\nmetrics + compact diagnostics",
+    shape=component,
+    fillcolor="#e8f7ff"
+  ];
+
+  runtime [
+    label="Runtime Dedupe Pipeline\nload bundle\nvalidate feature columns\nproduce ml_score + threshold",
+    fillcolor="#edf1ff"
+  ];
+
+  eval [
+    label="Post-Run Evaluation\nevaluate-run on completed artifacts\nprecision/recall/F1\nvector-only and generic-brand slices",
+    fillcolor="#f0f8ff"
+  ];
+
+  products -> augment;
+  labels -> augment;
+  augment -> augmented;
+  augmented -> pair_build;
+  pair_build -> block_keys;
+  block_keys -> features;
+  augmented -> embeddings;
+  embeddings -> features [label="semantic_sim"];
+  pair_build -> features [label="pair labels"];
+  features -> filter;
+  filter -> splits;
+  splits -> threshold;
+  threshold -> diagnostics;
+  splits -> diagnostics;
+  diagnostics -> bundle;
+  threshold -> bundle [label="saved threshold"];
+  bundle -> runtime;
+  runtime -> eval;
+  labels -> eval [style=dashed, label="acceptance labels"];
+}

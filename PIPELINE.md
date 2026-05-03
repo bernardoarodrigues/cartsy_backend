@@ -5,6 +5,8 @@ It is the reviewer-facing runbook for how raw product rows become final
 deduped-product artifacts. For model-specific training details, see
 `TRAINING.md`.
 
+![Cartsy runtime dedupe pipeline](diagrams/dedupe-pipeline.svg)
+
 ## Tech Stack
 
 The pipeline is a Python application with a CLI-first runtime and an optional API surface:

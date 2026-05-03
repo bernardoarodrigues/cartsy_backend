@@ -10,6 +10,8 @@ The implementation is intentionally CLI-first: reviewers can run the batch pipel
 - `data/products_first20.csv`: tiny public smoke fixture. The full challenge CSVs are expected under `data/` but are not committed because they are large/local inputs.
 - `models/final_submission/`: committed final logistic-regression model plus training diagnostics.
 - `outputs/sample/`: small sample output snapshot from the final full-data run.
+- `diagrams/dedupe-pipeline.svg`: runtime pipeline diagram.
+- `diagrams/training-pipeline.svg`: supervised training pipeline diagram.
 - `PIPELINE.md`: operational pipeline walkthrough and runtime trade-offs.
 - `TRAINING.md`: supervised training, augmentation, threshold selection, and artifact guide.
 
@@ -108,6 +110,8 @@ Useful endpoints include `/health`, `/runs`, `/runs/{run_id}/summary`, `/runs/{r
 
 The pipeline follows a conservative entity-resolution shape:
 
+![Cartsy runtime dedupe pipeline](diagrams/dedupe-pipeline.svg)
+
 1. Ingest CSV rows with tolerant parsing.
 2. Normalize product fields into `NormalizedProduct`: source id, retailer, names, brand, category, price, size, pack count, model tokens, identifiers, and quality flags.
 3. Load normalized rows into Postgres working tables.
@@ -136,6 +140,8 @@ Two products are treated as the same purchasable item only when enough independe
 ## Training
 
 See `TRAINING.md` for the full training pipeline. The committed final model was trained with controlled positive augmentation, dirty-identifier hard negatives, embeddings, calibration, threshold curves, false-positive/false-negative exports, feature coefficients, and risky-cluster diagnostics.
+
+![Cartsy supervised training pipeline](diagrams/training-pipeline.svg)
 
 ## Evaluation
 
