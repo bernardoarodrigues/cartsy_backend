@@ -12,8 +12,8 @@ outputs/*
 # Keep small sample fixtures and sample deliverables commit-friendly.
 !data/products_first20.csv
 !models/
-!models/final_submission/
-!models/final_submission/**
+!models/train_20260502_final_submission/
+!models/train_20260502_final_submission/**
 !outputs/
 !outputs/sample/
 !outputs/sample/**
