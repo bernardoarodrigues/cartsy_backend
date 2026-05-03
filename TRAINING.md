@@ -67,7 +67,7 @@ Feature families include:
 - Variant and contradiction features: explicit variant conflicts, one-sided variant-token presence, kit/standalone conflicts, kit count/component conflicts, product-form conflicts, weak exact contradictions, contradiction count, and contradiction strength.
 - Feature coverage count, which helps identify sparse-evidence pairs.
 
-When `--use-embeddings` is enabled, training computes `semantic_sim` for candidate pairs and reuses compatible embedding caches when possible.
+When `--use-embeddings` is enabled, training computes `semantic_sim` for candidate pairs and reuses compatible embedding caches when possible. Newly created training embeddings are written to the same shared product-embedding JSON cache used by the dedupe pipeline, so later dedupe runs can hydrate matching product vectors without another provider call.
 
 ## Step 4: Model Training
 
@@ -113,6 +113,8 @@ training_embedding_products.json
 The committed final-submission subset keeps the model and compact reviewer diagnostics under `models/train_20260502_130136_final_submission/`.
 
 `metrics.json` records the chosen threshold, target precision, recall guard, CV thresholds, calibration status, pair counts, filtered contradiction positives, test average precision, test precision/recall/F1, embedding provider, and artifact list.
+
+`training_embedding_products.json` records embedding cache hits, matrix-cache hits, created embeddings, and the shared JSON cache path used for product embeddings.
 
 ## Step 6: Runtime Use
 

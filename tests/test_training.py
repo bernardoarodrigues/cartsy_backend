@@ -19,6 +19,7 @@ from cartsy_dedupe.training import (
     training_embedding_text,
 )
 from cartsy_dedupe.utils.pipeline_cache import (
+    read_stage_cache,
     embedding_text_hash,
     read_embedding_cache,
     write_embedding_cache,
@@ -235,6 +236,10 @@ def test_training_embeddings_reuse_product_cache(tmp_path: Path, monkeypatch) ->
     assert manifest["cache_hits"] == 1
     assert manifest["created_embeddings"] == 1
     assert read_embedding_cache(Path(manifest["cache_path"]))
+    cache_blob = read_stage_cache(Path(manifest["cache_path"]))
+    assert cache_blob is not None
+    assert cache_blob["metadata"]["cache_scope"] == "shared"
+    assert cache_blob["metadata"]["stage"] == "product_embeddings"
 
 
 def test_training_embeddings_reuse_matrix_cache_without_provider_call(tmp_path: Path, monkeypatch) -> None:

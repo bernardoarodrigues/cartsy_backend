@@ -163,6 +163,26 @@ def embedding_cache_key(
     )
 
 
+def shared_embedding_cache_key(
+    *,
+    embedding_provider: str = "openai",
+    embedding_model: str,
+    embedding_dimensions: int,
+    code: dict[str, str],
+) -> str:
+    """Return the shared product embedding cache key used by training and dedupe."""
+    return cache_key(
+        {
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
+            "stage": "product_embeddings_shared",
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
+            "embedding_dimensions": embedding_dimensions,
+            "code": code,
+        }
+    )
+
+
 def scoring_cache_key(
     *,
     retrieval_key: str,

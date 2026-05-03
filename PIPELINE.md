@@ -246,9 +246,9 @@ Set `CARTSY_STAGE_CACHE_ENABLED=false` to force stage recomputation. `summary_re
 
 Per-layer retrieval caching is also enabled when stage caching is enabled, so exact, FTS, trigram, and vector retrieval rows can be reused independently before the full retrieval-stage cache exists.
 
-Product embedding caching is active by default and can be controlled separately with `CARTSY_EMBEDDING_CACHE_ENABLED=false`. It is keyed by product embedding text, normalization key, model, dimensions, and code fingerprint, so embeddings are reused across repeated runs on the same products and save OpenAI API cost.
+Product embedding caching is active by default and can be controlled separately with `CARTSY_EMBEDDING_CACHE_ENABLED=false`. JSON product embedding caches are shared by training and dedupe under the same `embeddings/` cache directory. They are keyed by embedding provider, model, dimensions, code fingerprint, source id, and exact product embedding-text hash, so embeddings are reused across repeated runs on the same products and save OpenAI API cost without accepting stale text.
 
-Training runs with `--use-embeddings` also reuse product embedding caches. They first look for a matching dedupe embedding matrix cache (`embeddings_<normalization_key>_*.npy` plus `source_id_to_index.json`) for the same products file, then fall back to text-hash JSON embedding caches before creating any missing embeddings.
+Training runs with `--use-embeddings` read and write that same shared JSON product embedding cache. They still first look for a matching dedupe embedding matrix cache (`embeddings_<normalization_key>_*.npy` plus `source_id_to_index.json`) for the same products file, then fall back to compatible matrix caches and the shared text-hash JSON cache before creating any missing embeddings.
 
 ## 10. Run Artifacts
 

@@ -49,15 +49,14 @@ from cartsy_dedupe.utils.pipeline_cache import (
     code_fingerprint,
     embedding_cache_enabled,
     embedding_cache_dir,
-    embedding_cache_key,
     embedding_text_hash,
     find_embedding_matrix_cache,
     iter_embedding_matrix_caches,
     normalization_cache_key,
     normalize_module_hash,
-    product_signature,
     read_embedding_cache,
     read_stage_cache,
+    shared_embedding_cache_key,
     write_embedding_cache,
 )
 from cartsy_dedupe.utils.pipeline_helpers import embedding_text
@@ -838,8 +837,7 @@ def compute_training_semantic_similarities(
             embedding_model=embedding_model,
         )
         embedding_code = code_fingerprint("utils/pipeline_helpers.py")
-        training_cache_id = embedding_cache_key(
-            normalization_key=f"training:{product_signature(products)}",
+        training_cache_id = shared_embedding_cache_key(
             embedding_provider=embedding_provider,
             embedding_model=embedding_model,
             embedding_dimensions=embedding_dimensions,
@@ -847,8 +845,8 @@ def compute_training_semantic_similarities(
         )
         training_cache_path = cache_path_for("embeddings", training_cache_id)
         training_cache_metadata = {
-            "stage": "training_product_embeddings",
-            "normalization_key": f"training:{product_signature(products)}",
+            "stage": "product_embeddings",
+            "cache_scope": "shared",
             "embedding_provider": embedding_provider,
             "embedding_model": embedding_model,
             "embedding_dimensions": embedding_dimensions,

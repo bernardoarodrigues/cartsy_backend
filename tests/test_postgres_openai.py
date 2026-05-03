@@ -19,8 +19,10 @@ from cartsy_dedupe.utils.pipeline_cache import (
     code_fingerprint,
     embedding_cache_key,
     embedding_text_hash,
+    read_embedding_cache,
     retrieval_layer_cache_key,
     retrieval_rows_to_records,
+    shared_embedding_cache_key,
     write_cache_payload,
     write_embedding_cache,
 )
@@ -665,7 +667,7 @@ def test_embed_products_reuses_cached_embeddings_without_provider_call(tmp_path:
     cache_path = (
         Path(tmp_path / "cache")
         / "embeddings"
-        / f"{embedding_cache_key(normalization_key='norm-key', embedding_provider=pipeline.embedding_provider, embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
+        / f"{shared_embedding_cache_key(embedding_provider=pipeline.embedding_provider, embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
     )
     write_embedding_cache(
         cache_path,
@@ -677,7 +679,7 @@ def test_embed_products_reuses_cached_embeddings_without_provider_call(tmp_path:
         },
         metadata={
             "stage": "product_embeddings",
-            "normalization_key": "norm-key",
+            "cache_scope": "shared",
             "embedding_provider": pipeline.embedding_provider,
             "embedding_model": pipeline.embedding_model,
             "embedding_dimensions": pipeline.embedding_dimensions,
@@ -825,3 +827,11 @@ def test_embed_products_skips_cached_embeddings_with_wrong_dimensions(tmp_path: 
         "UPDATE cartsy_products SET embedding = %s WHERE source_id = %s",
         [([0.4, 0.5, 0.6], "sku-1")],
     )
+    shared_cache_path = (
+        Path(tmp_path / "cache")
+        / "embeddings"
+        / f"{shared_embedding_cache_key(embedding_provider=pipeline.embedding_provider, embedding_model=pipeline.embedding_model, embedding_dimensions=pipeline.embedding_dimensions, code=code_fingerprint('utils/pipeline_helpers.py'))}.json"
+    )
+    shared_entries = read_embedding_cache(shared_cache_path)
+    assert shared_entries is not None
+    assert shared_entries["sku-1"]["embedding"] == [0.4, 0.5, 0.6]

@@ -61,7 +61,6 @@ from cartsy_dedupe.utils.pipeline_cache import (
     normalize_module_hash,
     pair_blocks_from_records,
     pair_blocks_to_records,
-    product_signature,
     read_cache_payload,
     read_embedding_cache,
     read_normalization_cache,
@@ -70,6 +69,7 @@ from cartsy_dedupe.utils.pipeline_cache import (
     retrieval_rows_to_records,
     retrieval_cache_key,
     scoring_cache_key,
+    shared_embedding_cache_key,
     stage_env_fingerprint,
     stage_cache_enabled,
     stage_cache_status as make_stage_cache_status,
@@ -663,18 +663,31 @@ class DedupePipeline:
         embedding_cache_metadata: dict[str, Any] | None = None
         if normalization_key and embedding_cache_enabled():
             embedding_code = code_fingerprint("utils/pipeline_helpers.py")
-            embedding_cache_id = embedding_cache_key(
+            shared_cache_id = shared_embedding_cache_key(
+                embedding_provider=self.embedding_provider,
+                embedding_model=self.embedding_model,
+                embedding_dimensions=self.embedding_dimensions,
+                code=embedding_code,
+            )
+            embedding_cache_path = cache_path_for("embeddings", shared_cache_id)
+            embedding_cache_entries = read_embedding_cache(embedding_cache_path) or {}
+            legacy_cache_id = embedding_cache_key(
                 normalization_key=normalization_key,
                 embedding_provider=self.embedding_provider,
                 embedding_model=self.embedding_model,
                 embedding_dimensions=self.embedding_dimensions,
                 code=embedding_code,
             )
-            embedding_cache_path = cache_path_for("embeddings", embedding_cache_id)
-            embedding_cache_entries = read_embedding_cache(embedding_cache_path) or {}
+            legacy_cache_path = cache_path_for("embeddings", legacy_cache_id)
+            if legacy_cache_path != embedding_cache_path:
+                legacy_cache_entries = read_embedding_cache(legacy_cache_path) or {}
+                embedding_cache_entries = {
+                    **legacy_cache_entries,
+                    **embedding_cache_entries,
+                }
             embedding_cache_metadata = {
                 "stage": "product_embeddings",
-                "normalization_key": normalization_key,
+                "cache_scope": "shared",
                 "embedding_provider": self.embedding_provider,
                 "embedding_model": self.embedding_model,
                 "embedding_dimensions": self.embedding_dimensions,
@@ -745,6 +758,12 @@ class DedupePipeline:
                 cur.executemany("UPDATE cartsy_products SET embedding = %s WHERE source_id = %s", cached_updates)
             self.embedding_cache_hit_count += len(cached_updates)
             self.dev_log(f"reused {len(cached_updates):,} cached embeddings")
+            if embedding_cache_path is not None and embedding_cache_metadata is not None:
+                write_embedding_cache(
+                    embedding_cache_path,
+                    entries=embedding_cache_entries,
+                    metadata=embedding_cache_metadata,
+                )
 
         batches = list(batched(rows_to_embed, self.embedding_batch_size))
         self.dev_log(f"creating embeddings in {len(batches):,} batches")
