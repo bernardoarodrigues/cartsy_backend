@@ -407,6 +407,44 @@ def test_score_postgres_pair_blocks_exact_identifier_with_identity_contradiction
     assert "variant_token_conflict" in pair.explanation
 
 
+def test_score_postgres_pair_blocks_exact_identifier_with_one_sided_variant() -> None:
+    pipeline = DedupePipeline()
+    pipeline.ml_model_bundle = {
+        "model": _FixedModel(0.99),
+        "feature_columns": ["title_token_set", "variant_token_presence_mismatch"],
+        "threshold": 0.84,
+    }
+    left = _product(
+        id="1",
+        brand="",
+        retailer="mercadolivre",
+        sku="MLB2033130474",
+        prod_name="Dispositivo Ocular Para Terapia De Luz Vermelha Led 3 Modos",
+        dimension="",
+    )
+    right = _product(
+        id="2",
+        brand="",
+        retailer="mercadolivre",
+        sku="MLB2033130474",
+        prod_name="Dispositivo Ocular Para Terapia De Luz Vermelha Led 3 Modos Cor Escuro",
+        dimension="",
+    )
+
+    pair = pipeline.score_postgres_pair(
+        left,
+        right,
+        {"exact:retailer_sku:mercadolivre:mlb2033130474", "lexical:fts:0.7143", "trigram:title:1.0000"},
+        PipelineConfig(merge_threshold=0.84),
+        semantic_sim=0.98,
+    )
+
+    assert pair.decision == "no_merge"
+    assert pair.decision_reason == "hard_contradiction"
+    assert pair.feature_scores["ml_variant_token_presence_mismatch"] == 1.0
+    assert "variant_token_presence_mismatch" in pair.explanation
+
+
 def test_score_postgres_pair_does_not_promote_brand_title_without_exact_sku() -> None:
     pipeline = DedupePipeline()
     pipeline.ml_model_bundle = {

@@ -98,6 +98,7 @@ Trade-off: this avoids embedding truly unrelated products, but logistic regressi
 | `retrieval_layer_count` | Number of distinct retrieval layers (exact/lexical/trigram/vector) that surfaced the pair |
 | `variant_conflict` | 1 if same brand but salient title tokens are disjoint |
 | `variant_token_conflict` | 1 if explicit variant tokens disagree, such as shade codes or color words |
+| `variant_token_presence_mismatch` | 1 if only one side has an explicit variant token while titles otherwise strongly contain each other |
 | `kit_standalone_conflict` | 1 if one side is a kit/multi-component product and the other is a standalone item |
 | `kit_count_conflict` | 1 if both sides are kits but explicit product/item counts differ |
 | `kit_component_conflict` | 1 if both sides are kits but their parsed component terms do not overlap |
@@ -141,7 +142,7 @@ else:
 
 Canonical URLs are trusted only when they look like product pages; click/count/redirect/tracking paths are filtered by `canonicalize_url` before insertion into the exact-key table.
 
-`hard_contradiction_features` is intentionally small and generic: factual size/pack conflicts, explicit shade/color/model-token conflicts, kit count conflicts, and kit/standalone or incompatible-kit conflicts. Broader weak signals, such as product-form disagreement, remain model features and evidence penalties rather than scattered one-off guards.
+`hard_contradiction_features` is intentionally small and generic: factual size/pack conflicts, explicit shade/color/model-token conflicts, one-sided explicit variant-token mismatches, kit count conflicts, and kit/standalone or incompatible-kit conflicts. Broader weak signals, such as product-form disagreement, remain model features and evidence penalties rather than scattered one-off guards.
 
 `evidence_merge_threshold` defaults to `0.78`. This is a runtime safety gate for sparse or borderline candidate pairs, especially vector-only and high-similarity same-family pairs: the model can still score them, but a high `ml_score` alone is not enough to create a merge edge when independent evidence is weak.
 
@@ -212,7 +213,7 @@ When `DEFAULT_FEATURE_COLUMNS` changes, retrain the model — the runtime `load_
 Identity-contradiction features are part of the training contract, not ad hoc
 runtime special cases. When retraining, inspect the coefficients and false
 positive slices for `variant_token_conflict`, `kit_standalone_conflict`,
-`kit_count_conflict`, `kit_component_conflict`, `product_form_conflict`, and `weak_exact_contradiction`;
+`variant_token_presence_mismatch`, `kit_count_conflict`, `kit_component_conflict`, `product_form_conflict`, and `weak_exact_contradiction`;
 these are the model-facing signals that should teach logistic regression that
 same-brand, high-title-similarity variants can still be different products.
 Positive training pairs that trigger hard contradiction features are filtered

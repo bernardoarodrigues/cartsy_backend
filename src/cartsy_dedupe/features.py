@@ -167,6 +167,7 @@ DEFAULT_FEATURE_COLUMNS = [
     "retrieval_layer_count",
     "variant_conflict",
     "variant_token_conflict",
+    "variant_token_presence_mismatch",
     "kit_standalone_conflict",
     "kit_count_conflict",
     "kit_component_conflict",
@@ -335,6 +336,7 @@ def hard_contradiction_features(features: Mapping[str, float]) -> bool:
             "size_conflict",
             "pack_conflict",
             "variant_token_conflict",
+            "variant_token_presence_mismatch",
             "kit_standalone_conflict",
             "kit_count_conflict",
             "kit_component_conflict",
@@ -442,10 +444,15 @@ def contradiction_features(
         right_salient=right_salient,
     )
     variant_token_conflict = float(
-        same_brand
+        same_brand_or_shared_identifier(left, right)
         and bool(left_variant)
         and bool(right_variant)
         and left_variant.isdisjoint(right_variant)
+    )
+    variant_token_presence_mismatch = float(
+        same_brand_or_shared_identifier(left, right)
+        and bool(left_variant) != bool(right_variant)
+        and high_title_containment(left.name_norm, right.name_norm)
     )
     kit_standalone_conflict = float(left_is_kit != right_is_kit and bool(left_components or right_components))
     kit_count_conflict = float(
@@ -474,6 +481,7 @@ def contradiction_features(
         exact_identifier_present(left, right)
         and (
             variant_token_conflict
+            or variant_token_presence_mismatch
             or kit_standalone_conflict
             or kit_count_conflict
             or kit_component_conflict
@@ -483,6 +491,7 @@ def contradiction_features(
     contradiction_values = (
         broad_variant_conflict,
         variant_token_conflict,
+        variant_token_presence_mismatch,
         kit_standalone_conflict,
         kit_count_conflict,
         kit_component_conflict,
@@ -495,6 +504,7 @@ def contradiction_features(
     return {
         "variant_conflict": broad_variant_conflict,
         "variant_token_conflict": variant_token_conflict,
+        "variant_token_presence_mismatch": variant_token_presence_mismatch,
         "kit_standalone_conflict": kit_standalone_conflict,
         "kit_count_conflict": kit_count_conflict,
         "kit_component_conflict": kit_component_conflict,
@@ -561,6 +571,21 @@ def exact_identifier_present(left: NormalizedProduct, right: NormalizedProduct) 
         left.identifiers.get(key) and left.identifiers.get(key) == right.identifiers.get(key)
         for key in ("ean", "gtin", "upc", "asin", "sku")
     )
+
+
+def same_brand_or_shared_identifier(left: NormalizedProduct, right: NormalizedProduct) -> bool:
+    return (bool(left.brand_norm) and left.brand_norm == right.brand_norm) or exact_identifier_present(left, right)
+
+
+def high_title_containment(left_title: str, right_title: str) -> bool:
+    if not left_title or not right_title:
+        return False
+    left_tokens = set(left_title.split())
+    right_tokens = set(right_title.split())
+    if not left_tokens or not right_tokens:
+        return False
+    smaller, larger = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
+    return len(smaller & larger) / len(smaller) >= 0.80
 
 
 def retrieval_layer_count(retrieval: Mapping[str, float], has_identifier: bool, semantic_sim: float) -> float:

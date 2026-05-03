@@ -62,9 +62,38 @@ def test_pair_features_include_identifier_and_variant_conflicts() -> None:
     assert features["size_conflict"] == 1.0
     assert features["variant_conflict"] == 1.0
     assert features["variant_token_conflict"] == 1.0
+    assert features["variant_token_presence_mismatch"] == 0.0
     assert features["product_form_conflict"] == 1.0
     assert features["weak_exact_contradiction"] == 1.0
     assert features["contradiction_count"] >= 3.0
+    assert hard_contradiction_features(features)
+
+
+def test_pair_features_expose_one_sided_variant_token_mismatch() -> None:
+    left = product(
+        id="1",
+        brand="",
+        retailer="mercadolivre",
+        sku="MLB2033130474",
+        prod_name="Dispositivo Ocular Para Terapia De Luz Vermelha Led 3 Modos",
+        dimension="",
+    )
+    right = product(
+        id="2",
+        brand="",
+        retailer="mercadolivre",
+        sku="MLB2033130474",
+        prod_name="Dispositivo Ocular Para Terapia De Luz Vermelha Led 3 Modos Cor Escuro",
+        dimension="",
+    )
+
+    features = build_pair_features(left, right, {"exact:retailer_sku:mercadolivre:mlb2033130474"})
+
+    assert features["title_token_set"] >= 0.95
+    assert features["exact_sku_same_retailer"] == 1.0
+    assert features["variant_token_conflict"] == 0.0
+    assert features["variant_token_presence_mismatch"] == 1.0
+    assert features["weak_exact_contradiction"] == 1.0
     assert hard_contradiction_features(features)
 
 

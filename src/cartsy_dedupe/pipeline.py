@@ -1374,6 +1374,7 @@ def decision_reason_labels(
     )
     add("variant_conflict", pair_features.get("variant_conflict", 0.0) > 0.0)
     add("variant_token_conflict", pair_features.get("variant_token_conflict", 0.0) > 0.0)
+    add("variant_token_presence_mismatch", pair_features.get("variant_token_presence_mismatch", 0.0) > 0.0)
     add("kit_standalone_conflict", pair_features.get("kit_standalone_conflict", 0.0) > 0.0)
     add("kit_count_conflict", pair_features.get("kit_count_conflict", 0.0) > 0.0)
     add("kit_component_conflict", pair_features.get("kit_component_conflict", 0.0) > 0.0)
