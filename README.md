@@ -7,7 +7,7 @@ Product entity resolution pipeline for the Cartsy challenge. The project ingests
 ## What Is Included
 
 - `src/cartsy_dedupe/`: ingestion, normalization, retrieval, scoring, clustering, artifact search, API, and training code.
-- `models/final_submission/`: committed final logistic-regression model plus training diagnostics.
+- `models/train_20260502_final_submission/`: committed final logistic-regression model plus compact training diagnostics.
 - `PIPELINE.md`: pipeline walkthrough and runtime trade-offs
 - `TRAINING.md`: supervised training, augmentation, threshold selection, and artifact walkthrough
 
@@ -24,7 +24,7 @@ docker compose up -d postgres
 `requirements.txt` installs the package in editable mode plus runtime/test dependencies. The default `.env.example` points at the committed final model:
 
 ```text
-CARTSY_ML_MODEL_PATH=models/final_submission/cartsy_logreg.joblib
+CARTSY_ML_MODEL_PATH=models/train_20260502_final_submission/cartsy_logreg.joblib
 ```
 
 For full vector retrieval, choose one embedding backend:
@@ -39,7 +39,7 @@ Place the full challenge CSV at `data/products.csv`, then run:
 ```bash
 .venv/bin/cartsy-dedupe run \
   --input data/products.csv \
-  --ml-model models/final_submission/cartsy_logreg.joblib \
+  --ml-model models/train_20260502_final_submission/cartsy_logreg.joblib \
   --merge-threshold 0.84 \
   --evidence-merge-threshold 0.78 \
   --near-miss-threshold 0.70 \

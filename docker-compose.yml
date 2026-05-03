@@ -33,6 +33,7 @@ services:
       - "8000:8000"
     volumes:
       - ./outputs:/app/outputs
+      - ./models:/app/models:ro
 
 volumes:
   cartsy_postgres_data:

@@ -30,7 +30,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 ```
 
-The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles. The committed final model is `models/final_submission/cartsy_logreg.joblib`.
+The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles. The committed final model is `models/train_20260502_final_submission/cartsy_logreg.joblib`.
 
 ## 1. Ingest And Normalize
 
@@ -169,11 +169,11 @@ rejected at startup instead of silently scoring with the wrong feature order.
 The committed final submission bundle lives at:
 
 ```text
-models/final_submission/cartsy_logreg.joblib
-models/final_submission/metrics.json
-models/final_submission/feature_coefficients.csv
-models/final_submission/threshold_curve.csv
-models/final_submission/calibration_threshold_curve.csv
+models/train_20260502_final_submission/cartsy_logreg.joblib
+models/train_20260502_final_submission/metrics.json
+models/train_20260502_final_submission/feature_coefficients.csv
+models/train_20260502_final_submission/threshold_curve.csv
+models/train_20260502_final_submission/calibration_threshold_curve.csv
 ```
 
 The training path has two commands:
@@ -193,7 +193,7 @@ cartsy-dedupe augment-training-data \
 cartsy-dedupe train-model \
   --products data/dataset_merged_augmented.csv \
   --ground-truth data/ground_truth_merged_augmented.csv \
-  --output-dir models/final_submission \
+  --output-dir models/train_YYYYMMDD_final_submission \
   --target-precision 0.97 \
   --min-recall 0.80 \
   --cv-folds 5 \
