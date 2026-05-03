@@ -359,6 +359,13 @@ def train_logistic_regression(
             output_path / "filtered_positive_contradictions.csv",
             filtered_positive_contradictions,
         )
+    filtered_label_counts = Counter(int(row["label"]) for row in rows)
+    if len(filtered_label_counts) < 2:
+        raise ValueError(
+            "Training pairs need at least one positive and one negative label after "
+            "filtering positive hard-contradiction pairs. "
+            f"Remaining label counts: {dict(filtered_label_counts)}."
+        )
     x = np.array([[row[column] for column in DEFAULT_FEATURE_COLUMNS] for row in rows], dtype=float)
     y = np.array([int(row["label"]) for row in rows], dtype=int)
     logger.info("Feature matrix shape %s (%d columns)", x.shape, len(DEFAULT_FEATURE_COLUMNS))

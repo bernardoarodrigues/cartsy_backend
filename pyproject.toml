@@ -37,7 +37,7 @@ cartsy-embed-cache = "cartsy_dedupe.embed_cache:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = [".", "src"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cartsy_dedupe"]

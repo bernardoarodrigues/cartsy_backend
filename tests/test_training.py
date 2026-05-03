@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+import cartsy_dedupe.training as training_module
 from cartsy_dedupe.normalize import normalize_row
 from cartsy_dedupe.training import (
     PairExample,
@@ -132,6 +134,46 @@ def test_filter_training_rows_removes_hard_contradictory_positives() -> None:
 
     assert [row["left_source_id"] for row in kept] == ["3", "5"]
     assert [row["left_source_id"] for row in filtered] == ["1"]
+
+
+def test_train_logistic_regression_fails_if_filtering_removes_one_class(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    products_path = tmp_path / "products.csv"
+    truth_path = tmp_path / "truth.csv"
+    write_csv(products_path, product_rows()[:3], ["id", "prod_name", "brand", "category", "description", "specs", "img_links", "url", "created_at", "updated_at", "retailer", "price", "sku", "dimension"])
+    write_csv(
+        truth_path,
+        [
+            {"source_id": "1", "deduped_id": "p1"},
+            {"source_id": "2", "deduped_id": "p1"},
+            {"source_id": "3", "deduped_id": "p3"},
+        ],
+        ["source_id", "deduped_id"],
+    )
+
+    monkeypatch.setattr(
+        training_module,
+        "build_training_pairs",
+        lambda *args, **kwargs: [
+            PairExample(left_index=0, right_index=1, label=1, block_keys=set()),
+            PairExample(left_index=0, right_index=2, label=0, block_keys=set()),
+        ],
+    )
+    monkeypatch.setattr(
+        training_module,
+        "pair_feature_rows",
+        lambda *args, **kwargs: [
+            {"label": 1, "hard_contradiction": 1, **{column: 0.0 for column in training_module.DEFAULT_FEATURE_COLUMNS}},
+            {"label": 0, "hard_contradiction": 0, **{column: 0.0 for column in training_module.DEFAULT_FEATURE_COLUMNS}},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="after filtering"):
+        train_logistic_regression(
+            products_path=products_path,
+            ground_truth_path=truth_path,
+            output_dir=tmp_path / "model",
+            cv_folds=2,
+        )
 
 
 def test_select_threshold_row_honors_precision_floor() -> None:

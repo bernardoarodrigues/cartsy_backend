@@ -13,7 +13,6 @@ class PipelineConfig:
     max_block_size: int | None = 500
     max_candidate_pairs: int | None = 500_000
     near_miss_limit: int = 25_000
-    sample_pair_limit: int = 500_000
 
 
 GLOBAL_IDENTIFIER_KEYS = {"ean", "gtin", "upc"}

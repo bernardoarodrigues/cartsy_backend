@@ -1817,7 +1817,6 @@ def run_pipeline(
             source_to_cluster=source_to_cluster,
             report=report,
             near_miss_limit=config.near_miss_limit,
-            sample_pair_limit=config.sample_pair_limit,
         )
 
     run_stage("write_outputs", write_outputs_action, items=len(products))

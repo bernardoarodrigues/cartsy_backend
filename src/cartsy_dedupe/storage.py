@@ -28,13 +28,12 @@ def write_outputs(
     source_to_cluster: dict[str, str],
     report: dict[str, object],
     near_miss_limit: int,
-    sample_pair_limit: int,
 ) -> None:
     """Write all durable artifacts for one completed pipeline run."""
     write_table(output_path / "normalized_products.parquet", [product.to_record() for product in products])
     write_table(
         output_path / "candidate_pairs.parquet",
-        [pair.to_record() for pair in candidate_pairs[:sample_pair_limit]],
+        [pair.to_record() for pair in candidate_pairs],
     )
     write_product_assignments(output_path / "product_assignments.csv", products, clusters, source_to_cluster)
     write_groups(output_path / "dedupe_groups.jsonl", clusters)
