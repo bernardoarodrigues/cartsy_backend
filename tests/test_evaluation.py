@@ -131,6 +131,41 @@ def test_evaluate_run_acceptance_checks_fail_when_precision_is_low(tmp_path: Pat
     assert checks["risk:vector_only.precision"]["passed"] is False
 
 
+def test_vector_only_precision_gate_passes_when_no_vector_merges(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    truth_path = tmp_path / "truth.csv"
+    run_dir.mkdir()
+    write_truth(truth_path)
+    pl.DataFrame(
+        [
+            {
+                "product_a_id": "1",
+                "product_b_id": "3",
+                "score": 0.61,
+                "ml_score": 0.91,
+                "evidence_score": 0.61,
+                "decision_threshold": 0.84,
+                "decision_reason": "below_evidence_threshold",
+                "decision": "no_merge",
+                "explanation": "relation:similar_related_product; decision_reason:below_evidence_threshold",
+                "blocking_keys": "vector:cosine:0.7900",
+                "feature_scores": "",
+            }
+        ]
+    ).write_parquet(run_dir / "candidate_pairs.parquet")
+
+    report = evaluate_run_against_truth(
+        run_dir=run_dir,
+        ground_truth_path=truth_path,
+        min_vector_only_precision=0.99,
+    )
+
+    checks = {check["name"]: check for check in report["acceptance"]["checks"]}
+    assert checks["risk:vector_only.precision"]["value"] is None
+    assert checks["risk:vector_only.precision"]["passed"] is True
+    assert report["acceptance"]["passed"] is True
+
+
 def test_evaluate_run_cli_writes_default_report(tmp_path: Path, capsys) -> None:
     run_dir = tmp_path / "run"
     truth_path = tmp_path / "truth.csv"

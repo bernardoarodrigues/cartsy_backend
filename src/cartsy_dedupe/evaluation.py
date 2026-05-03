@@ -104,12 +104,13 @@ def acceptance_report(
         checks.append(metric_check("overall.recall", overall.get("recall"), min_recall))
     if min_vector_only_precision is not None:
         vector_metrics = slices.get("risk:vector_only")
+        no_vector_merges = bool(vector_metrics is not None and int(vector_metrics.get("predicted_merge_pairs") or 0) == 0)
         checks.append(
             metric_check(
                 "risk:vector_only.precision",
                 None if vector_metrics is None else vector_metrics.get("precision"),
                 min_vector_only_precision,
-                missing_passes=vector_metrics is None,
+                missing_passes=vector_metrics is None or no_vector_merges,
             )
         )
     return {
