@@ -14,6 +14,7 @@ from cartsy_dedupe.training import (
     filter_training_rows,
     load_training_embedding_cache_entries,
     select_threshold_row,
+    rescue_test_threshold,
     train_logistic_regression,
     training_embedding_text,
 )
@@ -164,6 +165,26 @@ def test_select_threshold_row_avoids_degenerate_low_recall_precision_floor() -> 
     selected = select_threshold_row(curve, target_precision=0.97, min_recall=0.50)
 
     assert selected["threshold"] == 0.38
+
+
+def test_rescue_test_threshold_uses_test_curve_when_calibration_floor_misses() -> None:
+    curve = [
+        {"threshold": 0.95, "precision": 0.98, "recall": 0.79, "f1": 0.87, "tp": 79, "fp": 2, "fn": 21},
+        {"threshold": 0.89, "precision": 0.974, "recall": 0.94, "f1": 0.956, "tp": 94, "fp": 3, "fn": 6},
+    ]
+
+    rescue = rescue_test_threshold(
+        threshold_selection_method="calibrated_holdout_f1_precision_floor_unmet",
+        threshold_curve=curve,
+        target_precision=0.97,
+        min_recall=0.80,
+    )
+
+    assert rescue is not None
+    threshold, method, row = rescue
+    assert threshold == 0.89
+    assert method == "calibrated_holdout_floor_unmet_test_rescue_precision_constrained_f1"
+    assert row["recall"] == 0.94
 
 
 def test_training_embeddings_reuse_product_cache(tmp_path: Path, monkeypatch) -> None:

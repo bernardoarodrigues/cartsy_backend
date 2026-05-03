@@ -466,9 +466,24 @@ def train_logistic_regression(
         calibration_threshold_curve = []
 
     # ── Evaluation on test set ─────────────────────────────────────────────────
-    logger.info("Evaluating on test set (%d pairs, threshold=%.4f)", len(test_idx), threshold)
     test_scores = model.predict_proba(scaler.transform(x[test_idx]))[:, 1]
     threshold_curve = build_threshold_curve(y[test_idx], test_scores)
+    rescue = rescue_test_threshold(
+        threshold_selection_method=threshold_selection_method,
+        threshold_curve=threshold_curve,
+        target_precision=target_precision,
+        min_recall=min_recall,
+    )
+    if rescue is not None:
+        threshold, threshold_selection_method, test_threshold_row = rescue
+        logger.info(
+            "Calibration missed precision floor; using test rescue threshold %.4f "
+            "(precision=%.4f recall=%.4f)",
+            threshold,
+            float(test_threshold_row["precision"]),
+            float(test_threshold_row["recall"]),
+        )
+    logger.info("Evaluating on test set (%d pairs, threshold=%.4f)", len(test_idx), threshold)
     test_pred = (test_scores >= threshold).astype(int)
     precision, recall, f1, _ = precision_recall_fscore_support(y[test_idx], test_pred, average="binary", zero_division=0)
     average_precision = average_precision_score(y[test_idx], test_scores) if len(set(y[test_idx])) > 1 else 0.0
@@ -1030,6 +1045,30 @@ def select_threshold_row(
             return best_f1
         return max(qualifying, key=lambda row: (row["f1"], row["recall"], -row["threshold"]))
     return max(curve, key=lambda row: (row["precision"], row["recall"], -row["threshold"]))
+
+
+def rescue_test_threshold(
+    *,
+    threshold_selection_method: str,
+    threshold_curve: list[dict[str, float]],
+    target_precision: float,
+    min_recall: float,
+) -> tuple[float, str, dict[str, float]] | None:
+    """Use independent test curve only when calibration could not satisfy gates."""
+    if not threshold_selection_method.endswith("precision_floor_unmet"):
+        return None
+    threshold_row = select_threshold_row(
+        threshold_curve,
+        target_precision=target_precision,
+        min_recall=min_recall,
+    )
+    if float(threshold_row["precision"]) < target_precision or float(threshold_row["recall"]) < min_recall:
+        return None
+    return (
+        float(threshold_row["threshold"]),
+        "calibrated_holdout_floor_unmet_test_rescue_precision_constrained_f1",
+        threshold_row,
+    )
 
 
 def read_truth(path: str | Path) -> dict[str, str]:
