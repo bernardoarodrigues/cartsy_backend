@@ -7,7 +7,7 @@ digraph TrainingPipeline {
     ranksep="0.75",
     fontname="Helvetica",
     labelloc="t",
-    label="Cartsy Supervised Pairwise Training Pipeline"
+    label=<<FONT POINT-SIZE="24"><B>Cartsy Supervised Pairwise Training Pipeline</B></FONT>>
   ];
 
   node [
@@ -29,57 +29,57 @@ digraph TrainingPipeline {
   ];
 
   products [
-    label="Raw Products\nproducts.csv",
+    label=<<B>Raw Products</B><BR/>products.csv>,
     fillcolor="#eaf2ff"
   ];
 
   labels [
-    label="Ground Truth Labels\nground_truth_merged.csv\nsource_id -> deduped_id",
+    label=<<B>Ground Truth Labels</B><BR/>ground_truth_merged.csv<BR/>source_id -&gt; deduped_id>,
     fillcolor="#eaf2ff"
   ];
 
   augment [
-    label="1. Controlled Augmentation\npositive duplicates preserve\nvariant signatures\nhard negatives inject\nweak shared IDs + conflicts",
+    label=<<B>1. Controlled Augmentation</B><BR/>positive duplicates preserve<BR/>variant signatures<BR/>hard negatives inject<BR/>weak shared IDs + conflicts>,
     fillcolor="#eef7ed"
   ];
 
   augmented [
-    label="Augmented Training Files\ndataset_merged_augmented.csv\nground_truth_merged_augmented.csv\naugmentation_manifest_merged.csv",
+    label=<<B>Augmented Training Files</B><BR/>dataset_merged_augmented.csv<BR/>ground_truth_merged_augmented.csv<BR/>augmentation_manifest_merged.csv>,
     fillcolor="#eef7ed"
   ];
 
   pair_build [
-    label="2. Build Labeled Pairs\npositive same deduped_id\nhard negatives from IDs/brand/random\ncaps keep training tractable",
+    label=<<B>2. Build Labeled Pairs</B><BR/>positive same deduped_id<BR/>hard negatives from IDs/brand/random<BR/>caps keep training tractable>,
     fillcolor="#fff4df"
   ];
 
   block_keys [
-    label="Retrieval-Like Evidence\nexact identifiers\nFTS/trigram estimates\nvector cosine block keys",
+    label=<<B>Retrieval-Like Evidence</B><BR/>exact identifiers<BR/>FTS/trigram estimates<BR/>vector cosine block keys>,
     fillcolor="#fff9e8"
   ];
 
   embeddings [
-    label="Optional Embeddings\n--use-embeddings\nreuse product embedding caches\ncompute semantic_sim",
+    label=<<B>Optional Embeddings</B><BR/>--use-embeddings<BR/>reuse product embedding caches<BR/>compute semantic_sim>,
     fillcolor="#fceff5"
   ];
 
   features [
-    label="3. Feature Generation\nDEFAULT_FEATURE_COLUMNS\nidentifier, lexical, semantic,\nsize/pack/price, rule,\nvariant/kit/form contradictions",
+    label=<<B>3. Feature Generation</B><BR/>DEFAULT_FEATURE_COLUMNS<BR/>identifier, lexical, semantic,<BR/>size/pack/price, rule,<BR/>variant/kit/form contradictions>,
     fillcolor="#edf7f7"
   ];
 
   filter [
-    label="Policy Alignment Filter\nremove positive pairs with\nhard contradiction features\nwrite filtered_positive_contradictions.csv",
+    label=<<B>Policy Alignment Filter</B><BR/>remove positive pairs with<BR/>hard contradiction features<BR/>write filtered_positive_contradictions.csv>,
     fillcolor="#fff0ec"
   ];
 
   splits [
-    label="4. Train / Calibrate / Test\nstandard scaling\nlogistic regression\nisotonic calibration\nfallback for small datasets",
+    label=<<B>4. Train / Calibrate / Test</B><BR/>standard scaling<BR/>logistic regression<BR/>isotonic calibration<BR/>fallback for small datasets>,
     fillcolor="#f3efff"
   ];
 
   threshold [
-    label="5. Threshold Selection\nprecision-constrained F1\nrecall guard\nlower threshold wins ties\nrecord unmet floors explicitly",
+    label=<<B>5. Threshold Selection</B><BR/>precision-constrained F1<BR/>recall guard<BR/>lower threshold wins ties<BR/>record unmet floors explicitly>,
     shape=diamond,
     width=2.65,
     height=1.55,
@@ -87,23 +87,23 @@ digraph TrainingPipeline {
   ];
 
   diagnostics [
-    label="6. Diagnostics\nmetrics.json\nthreshold curves\nfeature coefficients\nfalse positives / negatives\ntop risky clusters",
+    label=<<B>6. Diagnostics</B><BR/>metrics.json<BR/>threshold curves<BR/>feature coefficients<BR/>false positives / negatives<BR/>top risky clusters>,
     fillcolor="#f7f7f7"
   ];
 
   bundle [
-    label="Final Model Bundle\nmodels/final_submission/\ncartsy_logreg.joblib\nmetrics + compact diagnostics",
+    label=<<B>Final Model Bundle</B><BR/>models/final_submission/<BR/>cartsy_logreg.joblib<BR/>metrics + compact diagnostics>,
     shape=component,
     fillcolor="#e8f7ff"
   ];
 
   runtime [
-    label="Runtime Dedupe Pipeline\nload bundle\nvalidate feature columns\nproduce ml_score + threshold",
+    label=<<B>Runtime Dedupe Pipeline</B><BR/>load bundle<BR/>validate feature columns<BR/>produce ml_score + threshold>,
     fillcolor="#edf1ff"
   ];
 
   eval [
-    label="Post-Run Evaluation\nevaluate-run on completed artifacts\nprecision/recall/F1\nvector-only and generic-brand slices",
+    label=<<B>Post-Run Evaluation</B><BR/>evaluate-run on completed artifacts<BR/>precision/recall/F1<BR/>vector-only and generic-brand slices>,
     fillcolor="#f0f8ff"
   ];
 

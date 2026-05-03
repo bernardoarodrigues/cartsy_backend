@@ -7,7 +7,7 @@ digraph DedupePipeline {
     ranksep="0.75",
     fontname="Helvetica",
     labelloc="t",
-    label="Cartsy Runtime Dedupe Pipeline"
+    label=<<FONT POINT-SIZE="24"><B>Cartsy Runtime Dedupe Pipeline</B></FONT>>
   ];
 
   node [
@@ -29,73 +29,73 @@ digraph DedupePipeline {
   ];
 
   input [
-    label="Raw Product CSV\ncartsy-dedupe run",
+    label=<<B>Raw Product CSV</B><BR/>cartsy-dedupe run>,
     fillcolor="#eaf2ff"
   ];
 
   normalize [
-    label="1. Ingest + Normalize\ncanonical schema\nbrand/title/category/specs\nIDs, URL keys, size, pack,\nmodel tokens, quality flags",
+    label=<<B>1. Ingest + Normalize</B><BR/>canonical schema<BR/>brand/title/category/specs<BR/>IDs, URL keys, size, pack,<BR/>model tokens, quality flags>,
     fillcolor="#eef7ed"
   ];
 
   postgres [
-    label="Postgres Working Tables\nnormalized products\nexact keys\nretrieval helper columns\nembedding vectors",
+    label=<<B>Postgres Working Tables</B><BR/>normalized products<BR/>exact keys<BR/>retrieval helper columns<BR/>embedding vectors>,
     fillcolor="#f3efff"
   ];
 
   exact [
-    label="2a. Exact Retrieval\nEAN/GTIN/UPC\nASIN\nsame-retailer SKU\ntrusted canonical URLs",
+    label=<<B>2a. Exact Retrieval</B><BR/>EAN/GTIN/UPC<BR/>ASIN<BR/>same-retailer SKU<BR/>trusted canonical URLs>,
     fillcolor="#fff4df"
   ];
 
   lexical [
-    label="2b. Lexical Retrieval\nbrand-aware Postgres FTS\nweighted title/category/specs",
+    label=<<B>2b. Lexical Retrieval</B><BR/>brand-aware Postgres FTS<BR/>weighted title/category/specs>,
     fillcolor="#fff4df"
   ];
 
   trigram [
-    label="2c. Trigram Retrieval\npg_trgm title similarity\ninside normalized brand blocks",
+    label=<<B>2c. Trigram Retrieval</B><BR/>pg_trgm title similarity<BR/>inside normalized brand blocks>,
     fillcolor="#fff4df"
   ];
 
   vector [
-    label="2d. Evidence-Gated Vector\npgvector cosine search\nonly rows with cheap signal\nenter vector fanout",
+    label=<<B>2d. Evidence-Gated Vector</B><BR/>pgvector cosine search<BR/>only rows with cheap signal<BR/>enter vector fanout>,
     fillcolor="#fff4df"
   ];
 
   pair_blocks [
-    label="Candidate Pair Evidence\nexact:* | lexical:fts\ntrigram:title | vector:cosine",
+    label=<<B>Candidate Pair Evidence</B><BR/>exact:* | lexical:fts<BR/>trigram:title | vector:cosine>,
     fillcolor="#fff9e8"
   ];
 
   semantic [
-    label="3. Dense Semantic Similarity\nembed candidate-pair products\ncompute pairwise cosine\nsemantic_sim",
+    label=<<B>3. Dense Semantic Similarity</B><BR/>embed candidate-pair products<BR/>compute pairwise cosine<BR/>semantic_sim>,
     fillcolor="#fceff5"
   ];
 
   features [
-    label="4. Pairwise Feature Contract\nDEFAULT_FEATURE_COLUMNS\nidentifier, lexical, semantic,\nsize/pack/price, variant,\nkit/form contradiction signals",
+    label=<<B>4. Pairwise Feature Contract</B><BR/>DEFAULT_FEATURE_COLUMNS<BR/>identifier, lexical, semantic,<BR/>size/pack/price, variant,<BR/>kit/form contradiction signals>,
     fillcolor="#edf7f7"
   ];
 
   rules [
-    label="5. Rule Chain\nCERTAIN_BLOCK\nCERTAIN_MATCH\nSTRONG_MATCH\nLIKELY_MATCH\nUNCERTAIN",
+    label=<<B>5. Rule Chain</B><BR/>CERTAIN_BLOCK<BR/>CERTAIN_MATCH<BR/>STRONG_MATCH<BR/>LIKELY_MATCH<BR/>UNCERTAIN>,
     fillcolor="#fff0ec"
   ];
 
   ml [
-    label="Calibrated Logistic Model\nmodels/final_submission/\ncartsy_logreg.joblib\nml_score + threshold",
+    label=<<B>Calibrated Logistic Model</B><BR/>models/final_submission/<BR/>cartsy_logreg.joblib<BR/>ml_score + threshold>,
     shape=component,
     fillcolor="#e8f7ff"
   ];
 
   evidence [
-    label="Evidence Score\nmulti-signal confidence\nexact + lexical + trigram\nsemantic + rule features\npenalized by contradictions",
+    label=<<B>Evidence Score</B><BR/>multi-signal confidence<BR/>exact + lexical + trigram<BR/>semantic + rule features<BR/>penalized by contradictions>,
     fillcolor="#edf7f7"
   ];
 
   decision [
-    label="Merge Policy\nhard blocks stop merges\ncertain exacts may fast-path\notherwise require:\nml_score >= threshold\nAND evidence_score >= floor",
+    label=<<B>Merge Policy</B><BR/>hard blocks stop merges<BR/>certain exacts may fast-path<BR/>otherwise require:<BR/>ml_score &gt;= threshold<BR/>AND evidence_score &gt;= floor>,
     shape=diamond,
     width=2.7,
     height=1.75,
@@ -103,33 +103,33 @@ digraph DedupePipeline {
   ];
 
   clustering [
-    label="6. Cluster Accepted Edges\nunion connected components\ncluster-level contradiction guards\nstable SHA1 dedupe_id",
+    label=<<B>6. Cluster Accepted Edges</B><BR/>union connected components<BR/>cluster-level contradiction guards<BR/>stable SHA1 dedupe_id>,
     fillcolor="#edf1ff"
   ];
 
   artifacts [
-    label="Run Artifacts\nnormalized_products.parquet\ncandidate_pairs.parquet\nproduct_assignments.csv\ndedupe_groups.jsonl\nnear_miss_pairs.csv\nsummary_report.json",
+    label=<<B>Run Artifacts</B><BR/>normalized_products.parquet<BR/>candidate_pairs.parquet<BR/>product_assignments.csv<BR/>dedupe_groups.jsonl<BR/>near_miss_pairs.csv<BR/>summary_report.json>,
     fillcolor="#f7f7f7"
   ];
 
   query [
-    label="Query Surfaces\nsearch / group / explain\nindex-artifacts / search-artifacts\noptional FastAPI server",
+    label=<<B>Query Surfaces</B><BR/>search / group / explain<BR/>index-artifacts / search-artifacts<BR/>optional FastAPI server>,
     fillcolor="#f2f2f2"
   ];
 
   evaluation [
-    label="Post-Run Evaluation\nevaluate-run against labels\nprecision/recall/F1\nrisk slices + gates",
+    label=<<B>Post-Run Evaluation</B><BR/>evaluate-run against labels<BR/>precision/recall/F1<BR/>risk slices + gates>,
     fillcolor="#f0f8ff"
   ];
 
   cache [
-    label="Caching\nnormalization\nper-layer retrieval\nscoring + clustering\nproduct embeddings",
+    label=<<B>Caching</B><BR/>normalization<BR/>per-layer retrieval<BR/>scoring + clustering<BR/>product embeddings>,
     shape=folder,
     fillcolor="#eef0f2"
   ];
 
   config [
-    label="Runtime Config\n.env\nDATABASE_URL\nembedding backend/dimensions\nretrieval fanout\nmodel path + thresholds",
+    label=<<B>Runtime Config</B><BR/>.env<BR/>DATABASE_URL<BR/>embedding backend/dimensions<BR/>retrieval fanout<BR/>model path + thresholds>,
     shape=note,
     fillcolor="#f8f0ff"
   ];
