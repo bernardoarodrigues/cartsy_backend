@@ -21,6 +21,7 @@ from cartsy_dedupe.utils.pipeline_metrics import RunMetrics
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser and subcommands."""
     parser = argparse.ArgumentParser(
         prog="python -m cartsy_dedupe.embed_cache",
         description=(
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_normalization_dir(preferred: Path) -> Path:
+    """Resolve the normalization cache directory to inspect."""
     if preferred.exists():
         return preferred
     fallback = normalization_cache_dir()
@@ -79,6 +81,7 @@ def resolve_normalization_dir(preferred: Path) -> Path:
 
 
 def latest_normalization_file(normalization_dir: Path) -> Path:
+    """Find latest normalization file."""
     candidates = sorted(
         normalization_dir.glob("*.json"),
         key=lambda path: path.stat().st_mtime_ns,
@@ -90,6 +93,7 @@ def latest_normalization_file(normalization_dir: Path) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the command-line entrypoint and return a process status code."""
     parser = build_parser()
     args = parser.parse_args(argv)
 

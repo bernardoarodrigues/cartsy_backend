@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 def exact_candidate_sql() -> str:
+    """Return SQL for exact-key candidate retrieval."""
     return """
         SELECT LEAST(a.product_index, b.product_index) AS left_index,
                GREATEST(a.product_index, b.product_index) AS right_index,
@@ -15,6 +16,7 @@ def exact_candidate_sql() -> str:
 
 
 def lexical_candidate_sql() -> str:
+    """Return SQL for FTS candidate retrieval."""
     return """
         SELECT p.source_index, q.source_index,
                'lexical:fts:' || round(q.rank::numeric, 4)::text AS evidence
@@ -35,6 +37,7 @@ def lexical_candidate_sql() -> str:
 
 
 def trigram_candidate_sql() -> str:
+    """Return SQL for trigram title candidate retrieval."""
     return """
         WITH brand_sizes AS (
             SELECT brand_norm, COUNT(*)::int AS brand_size
@@ -66,6 +69,7 @@ def trigram_candidate_sql() -> str:
 
 
 def vector_candidate_sql() -> str:
+    """Return SQL for pgvector candidate retrieval."""
     return """
         WITH raw AS (
             SELECT LEAST(p.source_index, q.source_index) AS left_index,
@@ -95,6 +99,7 @@ def vector_candidate_sql() -> str:
 
 
 def evidence_value(key: str, *, default: float) -> float:
+    """Extract a numeric value from a retrieval evidence string."""
     try:
         return float(key.rsplit(":", 1)[1])
     except ValueError:
@@ -102,6 +107,7 @@ def evidence_value(key: str, *, default: float) -> float:
 
 
 def postgres_retrieval_features(block_keys: set[str]) -> dict[str, float]:
+    """Extract numeric retrieval feature values from evidence strings."""
     features = {"exact": 0.0, "lexical": 0.0, "trigram": 0.0, "vector": 0.0}
     for key in block_keys:
         if key.startswith("exact:"):

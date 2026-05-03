@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - depends on local environment.
 
 
 def prepare_output_dir(path: str | Path) -> Path:
+    """Create the output directory for a run."""
     output_path = Path(path)
     output_path.mkdir(parents=True, exist_ok=True)
     return output_path
@@ -29,6 +30,7 @@ def write_outputs(
     near_miss_limit: int,
     sample_pair_limit: int,
 ) -> None:
+    """Write all durable artifacts for one completed pipeline run."""
     write_table(output_path / "normalized_products.parquet", [product.to_record() for product in products])
     write_table(
         output_path / "candidate_pairs.parquet",
@@ -41,6 +43,7 @@ def write_outputs(
 
 
 def write_table(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write a tabular artifact as parquet with CSV fallback."""
     if pl is not None:
         pl.DataFrame(rows).write_parquet(path)
         return
@@ -55,6 +58,7 @@ def write_table(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write rows to CSV with stable field ordering."""
     if not rows:
         path.write_text("", encoding="utf-8")
         return
@@ -65,6 +69,7 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def write_groups(path: Path, clusters: dict[str, dict[str, object]]) -> None:
+    """Write dedupe groups as newline-delimited JSON."""
     with path.open("w", encoding="utf-8") as handle:
         for cluster in sorted(clusters.values(), key=lambda item: str(item["dedupe_id"])):
             payload = {key: value for key, value in cluster.items() if key != "indexes"}
@@ -77,6 +82,7 @@ def write_product_assignments(
     clusters: dict[str, dict[str, object]],
     source_to_cluster: dict[str, str],
 ) -> None:
+    """Write one output assignment row per input product."""
     rows: list[dict[str, object]] = []
     for product in products:
         dedupe_id = source_to_cluster[product.source_id]
@@ -107,6 +113,7 @@ def write_near_misses(
     candidate_pairs: list[CandidatePair],
     limit: int,
 ) -> None:
+    """Write retained low-confidence or blocked candidate pairs."""
     product_by_id = {product.source_id: product for product in products}
     near_miss_pairs = sorted(
         [pair for pair in candidate_pairs if pair.decision == "no_merge"],

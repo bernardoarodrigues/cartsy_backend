@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - fallback for minimal environments.
 
 
 def iter_csv_rows(path: str | Path, *, limit: int | None = None) -> Iterator[dict[str, str]]:
+    """Yield CSV rows as string dictionaries with empty-string null handling."""
     with Path(path).open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         for idx, row in enumerate(reader, start=1):
@@ -20,6 +21,7 @@ def iter_csv_rows(path: str | Path, *, limit: int | None = None) -> Iterator[dic
 
 
 def load_rows(path: str | Path, limit: int | None = None) -> list[dict[str, str]]:
+    """Load CSV rows with Polars when available and csv as a fallback."""
     if pl is None:
         return list(iter_csv_rows(path, limit=limit))
 

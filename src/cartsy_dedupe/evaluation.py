@@ -34,6 +34,7 @@ def evaluate_run_against_truth(
     unlabeled_pairs = 0
 
     def slice_confusion(name: str) -> Confusion:
+        """Build slice confusion."""
         return slices.setdefault(name, Confusion())
 
     for pair in pairs:
@@ -97,6 +98,7 @@ def acceptance_report(
     min_recall: float | None,
     min_vector_only_precision: float | None,
 ) -> dict[str, object]:
+    """Build pass/fail acceptance checks for labeled evaluation metrics."""
     checks: list[dict[str, object]] = []
     if min_precision is not None:
         checks.append(metric_check("overall.precision", overall.get("precision"), min_precision))
@@ -126,6 +128,7 @@ def metric_check(
     *,
     missing_passes: bool = False,
 ) -> dict[str, object]:
+    """Build metric check."""
     numeric_value = coerce_optional_float(value)
     passed = missing_passes if numeric_value is None else numeric_value >= threshold
     return {
@@ -137,7 +140,9 @@ def metric_check(
 
 
 class Confusion:
+    """Mutable confusion-matrix counts for one evaluation slice."""
     def __init__(self) -> None:
+        """Initialize the object state used by this component."""
         self.tp = 0
         self.fp = 0
         self.fn = 0
@@ -145,9 +150,11 @@ class Confusion:
 
     @property
     def total(self) -> int:
+        """Return the total number of evaluated pairs."""
         return self.tp + self.fp + self.fn + self.tn
 
     def add(self, *, expected_merge: bool, predicted_merge: bool) -> None:
+        """Add counts or values into the accumulator."""
         if predicted_merge and expected_merge:
             self.tp += 1
         elif predicted_merge and not expected_merge:
@@ -158,6 +165,7 @@ class Confusion:
             self.tn += 1
 
     def to_metrics(self) -> dict[str, object]:
+        """Convert confusion counts into precision, recall, and F1 metrics."""
         precision = safe_div(self.tp, self.tp + self.fp)
         recall = safe_div(self.tp, self.tp + self.fn)
         return {
@@ -177,6 +185,7 @@ class Confusion:
 
 
 def read_ground_truth_labels(path: str | Path, *, include_blank_labels: bool = False) -> dict[str, str]:
+    """Read labeled source-to-deduped-id rows from ground truth CSV."""
     labels: dict[str, str] = {}
     with Path(path).open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
@@ -191,6 +200,7 @@ def read_ground_truth_labels(path: str | Path, *, include_blank_labels: bool = F
 
 
 def pair_slice_names(pair: dict[str, Any]) -> list[str]:
+    """Build pair slice names."""
     layer_names = retrieval_layers(pair)
     names = ["all_labeled"]
     if layer_names:
@@ -216,6 +226,7 @@ def pair_slice_names(pair: dict[str, Any]) -> list[str]:
 
 
 def retrieval_layers(pair: dict[str, Any]) -> list[str]:
+    """Extract retrieval layers."""
     blocking_keys = str(pair.get("blocking_keys", ""))
     layers: list[str] = []
     for prefix, name in (
@@ -230,6 +241,7 @@ def retrieval_layers(pair: dict[str, Any]) -> list[str]:
 
 
 def reason_labels(pair: dict[str, Any]) -> list[str]:
+    """Extract reason labels."""
     labels: list[str] = []
     decision_reason = str(pair.get("decision_reason", "")).strip()
     if decision_reason:
@@ -245,12 +257,14 @@ def reason_labels(pair: dict[str, Any]) -> list[str]:
 
 
 def safe_div(numerator: float, denominator: float) -> float | None:
+    """Safely compute safe div."""
     if denominator == 0:
         return None
     return numerator / denominator
 
 
 def coerce_optional_float(value: object) -> float | None:
+    """Coerce optional numeric artifact values to floats."""
     if value is None:
         return None
     try:

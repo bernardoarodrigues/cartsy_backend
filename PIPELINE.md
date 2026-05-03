@@ -1,6 +1,9 @@
 # Dedupe Pipeline
 
 This is the production path implemented in `src/cartsy_dedupe/pipeline.py`.
+It is the reviewer-facing runbook for how raw product rows become final
+deduped-product artifacts. For model-specific training details, see
+`TRAINING.md`.
 
 ## Tech Stack
 
@@ -25,7 +28,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 ```
 
-The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles.
+The main runtime configuration lives in `.env` / `.env.example`: `DATABASE_URL`, `CARTSY_EMBEDDING_PROVIDER`, `CARTSY_EMBEDDING_MODEL`, `CARTSY_EMBEDDING_DIMENSIONS`, `OPENAI_API_KEY`, the ML model path, retrieval fanout settings, and cache toggles. The committed final model is `models/final_submission/cartsy_logreg.joblib`.
 
 ## 1. Ingest And Normalize
 
@@ -156,11 +159,22 @@ Trade-off: the model scores pairs, while clustering handles group construction. 
 
 ## 7. Training And Evaluation
 
-Training should use the merged 68k labels plus controlled augmentation. The file
-`data/ground_truth_merged.csv` has many labeled rows, but most are singletons;
-on the current local copy it contains only 203 duplicate groups and 1,026
-all-pairs positives. That is not enough positive mass for a stable pair scorer
-by itself.
+Training is documented in detail in `TRAINING.md`. Operationally, the runtime
+expects a model bundle whose `feature_columns` exactly match
+`src/cartsy_dedupe/features.py::DEFAULT_FEATURE_COLUMNS`; stale bundles are
+rejected at startup instead of silently scoring with the wrong feature order.
+
+The committed final submission bundle lives at:
+
+```text
+models/final_submission/cartsy_logreg.joblib
+models/final_submission/metrics.json
+models/final_submission/feature_coefficients.csv
+models/final_submission/threshold_curve.csv
+models/final_submission/calibration_threshold_curve.csv
+```
+
+The training path has two commands:
 
 ```bash
 cartsy-dedupe augment-training-data \
@@ -177,67 +191,37 @@ cartsy-dedupe augment-training-data \
 cartsy-dedupe train-model \
   --products data/dataset_merged_augmented.csv \
   --ground-truth data/ground_truth_merged_augmented.csv \
-  --output-dir models \
+  --output-dir models/final_submission \
   --target-precision 0.97 \
-  --min-recall 0.50 \
+  --min-recall 0.80 \
   --cv-folds 5 \
   --max-positive-pairs 20000 \
   --max-hard-negative-pairs 60000 \
   --use-embeddings
 ```
 
-`--target-precision` drives threshold selection. The trainer chooses the best-F1
-threshold that satisfies the requested precision floor; if no threshold reaches
-the floor, it falls back to the highest-precision threshold available. When two
-thresholds have the same precision/recall/F1, the lower threshold wins so a flat
-calibrated plateau does not turn into an unnecessarily strict `0.99` cutoff.
-`--min-recall` protects against the worse failure mode: a threshold that meets
-the precision target by merging only a tiny number of positives. If no threshold
-meets both the precision floor and recall guard, the trainer uses the best-F1
-operating point and records `threshold_precision_floor_met: false` in
-`metrics.json`.
+Training writes threshold curves, precision/recall/F1, calibration diagnostics,
+false positives, false negatives, feature coefficients, filtered contradiction
+positives, and risky predicted clusters. Positive training pairs that trigger
+hard contradiction features are filtered because runtime policy will not merge
+those pairs. Keeping them as positives would teach unsafe coefficient signs.
 
-**Threshold selection** uses the same score scale that runtime uses. The trainer still records stratified k-fold raw logistic thresholds (default 5 folds) as diagnostics, but when isotonic calibration is available the saved merge threshold is selected from calibrated held-out probabilities with `--target-precision` as a precision floor. A separate held-out calibration split (≈15% of data) is used for `CalibratedClassifierCV`, which makes `P(merge)` values reliable probabilities rather than raw logit-derived scores on imbalanced data. If calibration misses the precision floor but the independent test curve has an operating point that satisfies both precision and recall, the trainer records a `calibrated_holdout_floor_unmet_test_rescue_precision_constrained_f1` method and saves that threshold instead of collapsing recall to a brittle high cutoff. For small datasets the function automatically falls back to a simpler 70/30 split.
-
-Synthetic augmentation creates two high-value patterns:
-
-- guarded positive duplicates that preserve variant signatures
-- dirty-identifier hard negatives with shared weak identifiers and variant conflicts
-
-If the augmented CSVs need to be regenerated, `cartsy-dedupe augment-training-data` ports those same patterns.
-
-Every training run writes threshold curves, precision/recall/F1, CV thresholds, false positives, false negatives, feature coefficients, and top risky predicted clusters. Calibrated runs also write `calibration_threshold_curve.csv`. `metrics.json` includes `threshold_selection_method`, `cv_folds`, `cv_thresholds`, and `calibrated` keys.
-
-When `DEFAULT_FEATURE_COLUMNS` changes, retrain the model — the runtime `load_ml_model` check validates that bundle feature columns match the current contract and rejects stale bundles.
-
-Identity-contradiction features are part of the training contract, not ad hoc
-runtime special cases. When retraining, inspect the coefficients and false
-positive slices for `variant_token_conflict`, `kit_standalone_conflict`,
-`variant_token_presence_mismatch`, `kit_count_conflict`, `kit_component_conflict`, `product_form_conflict`, and `weak_exact_contradiction`;
-these are the model-facing signals that should teach logistic regression that
-same-brand, high-title-similarity variants can still be different products.
-Positive training pairs that trigger hard contradiction features are filtered
-before model fitting and written to `filtered_positive_contradictions.csv`,
-because runtime policy will not merge those pairs and keeping them as positives
-teaches unsafe coefficient signs.
-
-Completed runs should be evaluated against production candidate pairs before a
-model is treated as trustworthy:
+Completed runs should be evaluated against labels before a model is treated as
+release-ready:
 
 ```bash
 cartsy-dedupe evaluate-run \
-  --run outputs/run_20260501_193000 \
-  --ground-truth data/ground_truth_merged.csv
+  --run outputs/run_YYYYMMDD_HHMMSS \
+  --ground-truth data/ground_truth_merged.csv \
+  --min-precision 0.97 \
+  --min-recall 0.80 \
+  --min-vector-only-precision 0.95
 ```
 
 The command writes `labeled_evaluation.json` with overall precision/recall/F1
-and slice metrics for retrieval layers such as `risk:vector_only`,
-`risk:generic_brand`, `evidence:exact`, `evidence:lexical`, `evidence:trigram`,
-and `evidence:vector`. Blank `deduped_id` values are ignored by default because
-they can otherwise create a single giant false-positive ground-truth cluster.
-Use `--min-precision`, `--min-recall`, and `--min-vector-only-precision` when
-the evaluation should act as a release gate; the CLI exits non-zero if any
-requested floor fails.
+and risk slices such as vector-only, generic-brand, exact, lexical, trigram, and
+vector evidence. Blank `deduped_id` labels are ignored by default so accidental
+empty-label clusters do not inflate positives.
 
 ## 8. Retrieval Defaults
 

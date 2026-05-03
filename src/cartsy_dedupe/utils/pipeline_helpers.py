@@ -11,6 +11,7 @@ T = TypeVar("T")
 
 
 def exact_keys(product: NormalizedProduct) -> dict[str, str]:
+    """Build exact-match keys from identifiers and trusted URLs."""
     keys: dict[str, str] = {}
     for key in ("ean", "gtin", "upc", "asin"):
         value = product.identifiers.get(key)
@@ -25,6 +26,7 @@ def exact_keys(product: NormalizedProduct) -> dict[str, str]:
 
 
 def canonicalize_url(url: str) -> str:
+    """Normalize product URLs into stable match keys when trustworthy."""
     if not url:
         return ""
     parsed = urlparse(url)
@@ -64,6 +66,7 @@ def trustworthy_product_url(host: str, path: str) -> bool:
 
 
 def product_search_text(product: NormalizedProduct) -> str:
+    """Build weighted text used for FTS and artifact search."""
     tokens = informative_tokens(product.name_norm, limit=8)
     return " ".join(
         part
@@ -78,15 +81,18 @@ def product_search_text(product: NormalizedProduct) -> str:
 
 
 def embedding_text(**parts: str | None) -> str:
+    """Build the text sent to the embedding backend for one product."""
     return "\n".join(f"{key}: {value}" for key, value in parts.items() if value)
 
 
 def batched(items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
+    """Yield fixed-size batches from a sequence."""
     for index in range(0, len(items), max(1, size)):
         yield items[index : index + size]
 
 
 def invert_clusters(clusters: dict[str, dict[str, object]]) -> dict[str, str]:
+    """Map source ids back to their dedupe cluster ids."""
     source_to_cluster: dict[str, str] = {}
     for dedupe_id, cluster in clusters.items():
         for source_id in cluster["source_ids"]:

@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 
 @dataclass(slots=True)
 class NormalizedProduct:
+    """Canonical product representation shared across retrieval, scoring, and outputs."""
     source_id: str
     retailer: str
     source_sku: str
@@ -31,6 +32,7 @@ class NormalizedProduct:
     quality_flags: tuple[str, ...] = field(default_factory=tuple)
 
     def to_record(self) -> dict[str, object]:
+        """Serialize the dataclass into a stable artifact row."""
         record = asdict(self)
         record["model_tokens"] = "|".join(self.model_tokens)
         record["identifiers"] = ";".join(
@@ -42,6 +44,7 @@ class NormalizedProduct:
 
 @dataclass(slots=True)
 class CandidatePair:
+    """Scored pairwise dedupe decision with evidence and diagnostics."""
     product_a_id: str
     product_b_id: str
     score: float
@@ -55,6 +58,7 @@ class CandidatePair:
     decision_reason: str = ""
 
     def to_record(self) -> dict[str, object]:
+        """Serialize the dataclass into a stable artifact row."""
         return {
             "product_a_id": self.product_a_id,
             "product_b_id": self.product_b_id,

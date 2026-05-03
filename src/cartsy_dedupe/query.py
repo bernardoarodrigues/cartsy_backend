@@ -16,6 +16,7 @@ def search_products(
     limit: int = 10,
     backend: str = "auto",
 ) -> list[dict[str, object]]:
+    """Search completed run assignments using the requested backend."""
     if backend not in {"auto", "artifacts", "postgres"}:
         raise ValueError("backend must be one of: auto, artifacts, postgres")
     if backend in {"auto", "postgres"}:
@@ -31,6 +32,7 @@ def search_products(
 
 
 def search_products_artifacts(run_dir: str | Path, query: str, *, limit: int = 10) -> list[dict[str, object]]:
+    """Search product assignments directly from run artifact files."""
     query_norm = normalize_text(query)
     rows = read_assignments(run_dir)
     scored: list[tuple[float, dict[str, str]]] = []
@@ -69,6 +71,7 @@ def search_products_artifacts(run_dir: str | Path, query: str, *, limit: int = 1
 
 
 def search_products_postgres(run_dir: str | Path, query: str, *, limit: int = 10) -> list[dict[str, object]]:
+    """Search indexed artifacts through Postgres and pgvector."""
     try:
         import psycopg
     except ImportError as exc:  # pragma: no cover - dependency is installed in the project venv.
@@ -117,6 +120,7 @@ def search_products_postgres(run_dir: str | Path, query: str, *, limit: int = 10
 
 
 def make_query_embedding(query: str) -> list[float] | None:
+    """Create make query embedding."""
     try:
         result = EmbeddingProvider().embed_texts([f"title: {query}"])
     except Exception:
@@ -125,6 +129,7 @@ def make_query_embedding(query: str) -> list[float] | None:
 
 
 def register_pgvector(conn: object) -> None:
+    """Register pgvector adapters on a Postgres connection."""
     try:
         from pgvector.psycopg import register_vector
     except ImportError:  # pragma: no cover - only needed for vector parameter adaptation.
@@ -133,6 +138,7 @@ def register_pgvector(conn: object) -> None:
 
 
 def postgres_search_sql(*, include_vector: bool) -> str:
+    """Build the SQL statement for Postgres-backed product search."""
     vector_select = ", 1 - (embedding <=> %s) AS vector_score" if include_vector else ", 0.0::double precision AS vector_score"
     vector_filter = "OR embedding IS NOT NULL" if include_vector else ""
     vector_evidence = (
@@ -191,6 +197,7 @@ def postgres_search_sql(*, include_vector: bool) -> str:
 
 
 def get_group(run_dir: str | Path, dedupe_id: str) -> dict[str, object]:
+    """Load one dedupe group and its source offers from a completed run."""
     group = read_group(run_dir, dedupe_id)
     offers = [row for row in read_assignments(run_dir) if row.get("dedupe_id") == dedupe_id]
     if group is None and not offers:
@@ -222,6 +229,7 @@ def get_group(run_dir: str | Path, dedupe_id: str) -> dict[str, object]:
 
 
 def explain_pair(run_dir: str | Path, source_id_a: str, source_id_b: str) -> dict[str, object]:
+    """Explain a candidate pair from completed run artifacts."""
     left, right = sorted([source_id_a, source_id_b])
     pair = find_candidate_pair(run_dir, left, right)
     assignments = {row["source_id"]: row for row in read_assignments(run_dir)}
@@ -241,12 +249,14 @@ def explain_pair(run_dir: str | Path, source_id_a: str, source_id_b: str) -> dic
 
 
 def read_assignments(run_dir: str | Path) -> list[dict[str, str]]:
+    """Read product assignment rows from a completed run."""
     path = Path(run_dir) / "product_assignments.csv"
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
 
 
 def read_groups(run_dir: str | Path) -> list[dict[str, object]]:
+    """Read dedupe group rows from a completed run."""
     path = Path(run_dir) / "dedupe_groups.jsonl"
     groups: list[dict[str, object]] = []
     if not path.exists():
@@ -259,6 +269,7 @@ def read_groups(run_dir: str | Path) -> list[dict[str, object]]:
 
 
 def read_near_misses(run_dir: str | Path) -> list[dict[str, str]]:
+    """Read retained near-miss pairs from a completed run."""
     path = Path(run_dir) / "near_miss_pairs.csv"
     if not path.exists():
         return []
@@ -267,6 +278,7 @@ def read_near_misses(run_dir: str | Path) -> list[dict[str, str]]:
 
 
 def read_candidate_pairs(run_dir: str | Path) -> list[dict[str, object]]:
+    """Read candidate pair decisions from a completed run."""
     run_path = Path(run_dir)
     parquet_path = run_path / "candidate_pairs.parquet"
     if parquet_path.exists():
@@ -285,6 +297,7 @@ def read_candidate_pairs(run_dir: str | Path) -> list[dict[str, object]]:
 
 
 def build_group_graph(run_dir: str | Path, dedupe_id: str) -> dict[str, object]:
+    """Build graph nodes and edges for one dedupe group."""
     assignments = read_assignments(run_dir)
     members = [row for row in assignments if row.get("dedupe_id") == dedupe_id]
     if not members:
@@ -328,6 +341,7 @@ def build_group_graph(run_dir: str | Path, dedupe_id: str) -> dict[str, object]:
 
 
 def read_group(run_dir: str | Path, dedupe_id: str) -> dict[str, object] | None:
+    """Read a single group record by dedupe id."""
     path = Path(run_dir) / "dedupe_groups.jsonl"
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -340,6 +354,7 @@ def read_group(run_dir: str | Path, dedupe_id: str) -> dict[str, object] | None:
 
 
 def find_candidate_pair(run_dir: str | Path, source_id_a: str, source_id_b: str) -> dict[str, object] | None:
+    """Find a candidate pair row regardless of source-id ordering."""
     run_path = Path(run_dir)
     parquet_path = run_path / "candidate_pairs.parquet"
     csv_path = run_path / "candidate_pairs.csv"
@@ -372,6 +387,7 @@ def find_candidate_pair(run_dir: str | Path, source_id_a: str, source_id_b: str)
 
 
 def print_table(rows: list[dict[str, object]], columns: list[str]) -> None:
+    """Render rows as a compact fixed-width terminal table."""
     if not rows:
         print("No results.")
         return
@@ -395,6 +411,7 @@ def print_table(rows: list[dict[str, object]], columns: list[str]) -> None:
 
 
 def truncate(value: str, width: int) -> str:
+    """Truncate long text for terminal display."""
     if len(value) <= width:
         return value
     return value[: max(0, width - 1)] + "…"

@@ -33,6 +33,7 @@ MODEL_RE = re.compile(r"\b(?=[a-z0-9-]*\d)(?:[a-z]{1,5}-?\d[a-z0-9-]{2,}|\d+[a-z
 
 
 def parse_price_cents(value: str) -> int | None:
+    """Parse price values into integer cents."""
     if value is None or not str(value).strip():
         return None
     try:
@@ -47,6 +48,7 @@ def extract_identifiers(
     specs_obj: object | None,
     raw_text: str,
 ) -> dict[str, str]:
+    """Extract marketplace and global identifiers from product text fields."""
     identifiers: dict[str, str] = {}
     sku = (source_sku or "").strip()
     if sku:
@@ -69,6 +71,7 @@ def extract_identifiers(
 
 
 def extract_model_tokens(text: str) -> tuple[str, ...]:
+    """Extract alphanumeric model-like tokens from product text."""
     normalized = normalize_text(text)
     tokens: set[str] = set()
     for match in MODEL_RE.findall(normalized):
@@ -83,6 +86,7 @@ def _looks_like_size_only(token: str) -> bool:
 
 
 def extract_pack_count(text: str) -> int | None:
+    """Extract an explicit pack count when the title or dimensions provide one."""
     normalized = normalize_text(text)
     match = PACK_RE.search(normalized)
     if not match:
@@ -94,6 +98,7 @@ def extract_pack_count(text: str) -> int | None:
 
 
 def extract_size(text: str) -> tuple[float | None, str | None, bool]:
+    """Extract a normalized size value and unit from title or dimension text."""
     matches = list(SIZE_RE.finditer(text or ""))
     if not matches:
         return None, None, False
@@ -112,6 +117,7 @@ def extract_size(text: str) -> tuple[float | None, str | None, bool]:
 
 
 def convert_size(value: float, unit: str) -> tuple[float, str]:
+    """Convert size values into comparable base units."""
     if unit == "l":
         return value * 1000.0, "ml"
     if unit == "floz":
@@ -126,6 +132,7 @@ def convert_size(value: float, unit: str) -> tuple[float, str]:
 
 
 def sizes_equivalent(a_value: float, a_unit: str, b_value: float, b_unit: str) -> bool:
+    """Compare sizes equivalent."""
     if a_unit != b_unit:
         return False
     if a_value == 0 or b_value == 0:

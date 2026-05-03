@@ -10,18 +10,22 @@ from .attributes import sizes_equivalent
 
 
 class UnionFind:
+    """Small disjoint-set structure used to assemble connected dedupe groups."""
     def __init__(self, size: int) -> None:
+        """Initialize the object state used by this component."""
         self.parent = list(range(size))
         self.rank = [0] * size
         self.members = {index: [index] for index in range(size)}
 
     def find(self, item: int) -> int:
+        """Find the canonical parent for a union-find item."""
         while self.parent[item] != item:
             self.parent[item] = self.parent[self.parent[item]]
             item = self.parent[item]
         return item
 
     def union(self, left: int, right: int) -> bool:
+        """Union two components and return whether they changed."""
         root_left = self.find(left)
         root_right = self.find(right)
         if root_left == root_right:
@@ -40,6 +44,7 @@ def build_clusters(
     candidate_pairs: list[CandidatePair],
     id_to_index: dict[str, int],
 ) -> tuple[dict[str, dict[str, object]], dict[str, int]]:
+    """Build dedupe clusters from accepted pairwise merge edges."""
     uf = UnionFind(len(products))
     accepted_edges: list[CandidatePair] = []
     blocked_edges = 0
@@ -95,11 +100,13 @@ def build_clusters(
 
 
 def indexes_for_root(uf: UnionFind, index: int) -> list[int]:
+    """Return product indexes currently in a union-find root."""
     root = uf.find(index)
     return uf.members[root]
 
 
 def has_cluster_contradiction(products: list[NormalizedProduct], indexes: list[int]) -> bool:
+    """Detect cluster-level contradictions before accepting a merge edge."""
     members = [products[index] for index in indexes]
     brands = {product.brand_norm for product in members if product.brand_norm and product.brand_norm not in GENERIC_BRANDS}
     if len(brands) > 1:
@@ -121,6 +128,7 @@ def has_cluster_contradiction(products: list[NormalizedProduct], indexes: list[i
 
 
 def has_size_contradiction(members: list[NormalizedProduct]) -> bool:
+    """Return whether a proposed cluster has incompatible sizes."""
     sizes = [
         (product.size_value, product.size_unit)
         for product in members
@@ -138,12 +146,15 @@ def has_size_contradiction(members: list[NormalizedProduct]) -> bool:
 
 
 def stable_dedupe_id(source_ids: list[str]) -> str:
+    """Create a deterministic dedupe id from sorted source ids."""
     digest = hashlib.sha1("|".join(source_ids).encode("utf-8")).hexdigest()[:12]
     return f"prod_{digest}"
 
 
 def choose_canonical_name(products: list[NormalizedProduct]) -> str:
+    """Choose the most useful canonical name for a dedupe group."""
     def quality(product: NormalizedProduct) -> tuple[int, int]:
+        """Score quality."""
         contains_brand = int(bool(product.brand_norm and product.brand_norm in product.name_norm))
         return contains_brand, len(product.name_raw)
 
@@ -151,6 +162,7 @@ def choose_canonical_name(products: list[NormalizedProduct]) -> str:
 
 
 def choose_mode(values: list[str]) -> str:
+    """Choose the most common non-empty value from a sequence."""
     counts: dict[str, int] = defaultdict(int)
     first_seen: dict[str, int] = {}
     for index, value in enumerate(values):

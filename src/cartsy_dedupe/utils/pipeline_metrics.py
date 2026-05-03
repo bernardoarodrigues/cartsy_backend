@@ -13,6 +13,7 @@ USD_PER_1M_TOKENS: dict[str, dict[str, float]] = {
 
 
 def usage_value(usage: Any, *names: str) -> int:
+    """Extract a numeric usage value from OpenAI SDK objects."""
     for name in names:
         if isinstance(usage, dict):
             value = usage.get(name)
@@ -24,6 +25,7 @@ def usage_value(usage: Any, *names: str) -> int:
 
 
 def usage_nested_value(usage: Any, parent_name: str, child_name: str) -> int:
+    """Extract a nested usage value from SDK response objects."""
     parent = usage.get(parent_name) if isinstance(usage, dict) else getattr(usage, parent_name, None)
     if parent is None:
         return 0
@@ -33,10 +35,12 @@ def usage_nested_value(usage: Any, parent_name: str, child_name: str) -> int:
 
 @dataclass
 class StageMetric:
+    """Timing and optional cache metadata for one pipeline stage."""
     elapsed_seconds: float = 0.0
     items: int = 0
 
     def as_report(self) -> dict[str, float | int | None]:
+        """Serialize metrics into a JSON-friendly report dictionary."""
         return {
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "items": self.items,
@@ -46,6 +50,7 @@ class StageMetric:
 
 @dataclass
 class UsageAccumulator:
+    """Aggregate token usage and estimated OpenAI costs."""
     calls: int = 0
     input_tokens: int = 0
     cached_input_tokens: int = 0
@@ -53,6 +58,7 @@ class UsageAccumulator:
     total_tokens: int = 0
 
     def add(self, usage: Any) -> None:
+        """Add counts or values into the accumulator."""
         if usage is None:
             return
         self.calls += 1
@@ -66,6 +72,7 @@ class UsageAccumulator:
         self.total_tokens += total_tokens or input_tokens + output_tokens
 
     def cost_usd(self, model: str) -> float:
+        """Estimate OpenAI embedding cost in USD."""
         prices = USD_PER_1M_TOKENS.get(model, {})
         billable_input = max(0, self.input_tokens - self.cached_input_tokens)
         return (
@@ -75,6 +82,7 @@ class UsageAccumulator:
         ) / 1_000_000
 
     def as_report(self, model: str) -> dict[str, float | int | str | None]:
+        """Serialize metrics into a JSON-friendly report dictionary."""
         return {
             "model": model,
             "calls": self.calls,
@@ -89,11 +97,13 @@ class UsageAccumulator:
 
 @dataclass
 class RunMetrics:
+    """Collect stage timings and model usage for a full run."""
     stages: dict[str, StageMetric] = field(default_factory=dict)
     openai_usage: dict[str, UsageAccumulator] = field(default_factory=lambda: defaultdict(UsageAccumulator))
 
     @contextmanager
     def stage(self, name: str, *, items: int = 0):
+        """Record one stage timing and cache status."""
         started = perf_counter()
         try:
             yield
@@ -103,6 +113,7 @@ class RunMetrics:
             metric.items += items
 
     def add_usage(self, model: str, usage: Any) -> None:
+        """Add model usage metadata to the run metrics."""
         self.openai_usage[model].add(usage)
 
     def as_report(
@@ -113,6 +124,7 @@ class RunMetrics:
         input_records: int,
         total_elapsed_seconds: float,
     ) -> dict[str, object]:
+        """Serialize metrics into a JSON-friendly report dictionary."""
         usage_by_model = {
             model: usage.as_report(model)
             for model, usage in sorted(self.openai_usage.items())

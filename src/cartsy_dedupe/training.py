@@ -87,6 +87,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PairExample:
+    """Labeled product-pair example used for supervised training."""
     left_index: int
     right_index: int
     label: int
@@ -570,6 +571,7 @@ def build_training_pairs(
     max_hard_negative_pairs: int,
     random_state: int,
 ) -> list[PairExample]:
+    """Build labeled positive and hard-negative pair examples for model training."""
     rng = random.Random(random_state)
     by_label: dict[str, list[int]] = defaultdict(list)
     for index, label in labels_by_index.items():
@@ -623,6 +625,7 @@ def collect_hard_negative_candidates(
     max_candidates: int,
     random_state: int,
 ) -> list[tuple[float, int, int]]:
+    """Collect candidate negative pairs with confusing shared signals."""
     rng = random.Random(random_state)
     candidates: dict[tuple[int, int], float] = {}
 
@@ -674,6 +677,7 @@ def collect_hard_negative_candidates(
 
 
 def identifier_buckets(products: list[NormalizedProduct]) -> dict[tuple[str, str], list[int]]:
+    """Group products by normalized identifier values."""
     buckets: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, product in enumerate(products):
         for key, value in product.identifiers.items():
@@ -690,6 +694,7 @@ def add_bucket_negative_candidates(
     *,
     max_bucket_pairs: int,
 ) -> None:
+    """Add hard-negative candidates from one identifier bucket."""
     pair_count = 0
     for left_pos, left_index in enumerate(bucket):
         for right_index in bucket[left_pos + 1 :]:
@@ -704,6 +709,7 @@ def add_bucket_negative_candidates(
 
 
 def random_negative_pairs(labels_by_index: dict[int, str], *, max_pairs: int, rng: random.Random) -> list[tuple[int, int]]:
+    """Sample random negative pairs from different ground-truth groups."""
     indexes = list(labels_by_index)
     pairs: set[tuple[int, int]] = set()
     attempts = 0
@@ -726,6 +732,7 @@ def add_pair(
     *,
     label: int | None = None,
 ) -> bool:
+    """Add one labeled pair while avoiding duplicates and self-pairs."""
     pair_key = (min(left_index, right_index), max(left_index, right_index))
     if pair_key in pairs:
         return False
@@ -735,6 +742,7 @@ def add_pair(
 
 
 def infer_block_keys(left: NormalizedProduct, right: NormalizedProduct) -> set[str]:
+    """Infer retrieval evidence keys for a labeled training pair."""
     keys: set[str] = set()
     for key, value in left.identifiers.items():
         if value and value == right.identifiers.get(key):
@@ -756,6 +764,7 @@ def pair_feature_rows(
     pair_examples: list[PairExample],
     semantic_by_pair: dict[tuple[int, int], float],
 ) -> list[dict[str, Any]]:
+    """Convert labeled pair examples into model feature rows."""
     rows: list[dict[str, Any]] = []
     example_iter: Any = pair_examples
     if len(pair_examples) > 500:
@@ -812,6 +821,7 @@ def compute_training_semantic_similarities(
     *,
     normalization_key: str | None = None,
 ) -> dict[tuple[int, int], float]:
+    """Compute semantic-similarity features used during model training."""
     embedder = EmbeddingProvider(provider=embedding_provider, model=embedding_model)
     indexes = sorted({index for pair in pair_examples for index in (pair.left_index, pair.right_index)})
     texts = {index: training_embedding_text(products[index]) for index in indexes}
@@ -964,6 +974,7 @@ def compute_training_semantic_similarities(
 
 
 def training_embedding_text(product: NormalizedProduct) -> str:
+    """Build embedding text for a training product row."""
     return embedding_text(
         brand=product.brand_raw,
         title=product.name_raw,
@@ -975,6 +986,7 @@ def training_embedding_text(product: NormalizedProduct) -> str:
 
 
 def training_expected_embedding_dimensions(embedding_provider: str, embedding_model: str) -> int:
+    """Return the expected embedding dimension for training vectors."""
     if embedding_provider == "openai":
         if embedding_model == "text-embedding-3-large":
             return 3072
@@ -988,6 +1000,7 @@ def load_training_embedding_cache_entries(
     embedding_provider: str | None = None,
     embedding_model: str | None = None,
 ) -> dict[str, dict[str, Any]]:
+    """Load reusable training embedding cache entries."""
     entries: dict[str, dict[str, Any]] = {}
     for cache_path in sorted(embedding_cache_dir().glob("*.json")):
         cache_blob = read_stage_cache(cache_path)
@@ -1013,6 +1026,7 @@ def load_training_embedding_cache_entries(
 
 
 def build_threshold_curve(y_true: np.ndarray, scores: np.ndarray) -> list[dict[str, float]]:
+    """Build precision, recall, and F1 metrics over candidate thresholds."""
     rows: list[dict[str, float]] = []
     for threshold in np.linspace(0.05, 0.99, 95):
         pred = (scores >= threshold).astype(int)
@@ -1072,14 +1086,17 @@ def rescue_test_threshold(
 
 
 def read_truth(path: str | Path) -> dict[str, str]:
+    """Read ground-truth labels into a source-id map."""
     return {row["source_id"]: row["deduped_id"] for row in load_rows(path)}
 
 
 def write_threshold_curve(path: Path, rows: list[dict[str, float]]) -> None:
+    """Write threshold diagnostics to CSV."""
     write_csv(path, rows, ["threshold", "precision", "recall", "f1", "tp", "fp", "fn"])
 
 
 def write_feature_coefficients(path: Path, coefficients: np.ndarray, columns: list[str]) -> None:
+    """Write model coefficients for reviewer inspection."""
     rows = [{"feature": column, "coefficient": float(coef)} for column, coef in zip(columns, coefficients, strict=True)]
     rows.sort(key=lambda row: abs(float(row["coefficient"])), reverse=True)
     write_csv(path, rows, ["feature", "coefficient"])
@@ -1096,6 +1113,7 @@ def write_error_examples(
     want_label: int,
     want_pred: int,
 ) -> None:
+    """Write false-positive or false-negative examples to CSV."""
     out: list[dict[str, Any]] = []
     for local_pos, row_index in enumerate(test_idx):
         if int(y_true[local_pos]) == want_label and int(pred[local_pos]) == want_pred:
@@ -1108,11 +1126,13 @@ def write_error_examples(
 
 
 def write_training_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write sampled training rows for debugging."""
     columns = ["left_source_id", "right_source_id", "label", "hard_contradiction", "blocking_keys", *DEFAULT_FEATURE_COLUMNS]
     write_csv(path, rows, columns)
 
 
 def write_risky_clusters(path: Path, rows: list[dict[str, Any]], test_idx: np.ndarray, scores: np.ndarray, pred: np.ndarray) -> None:
+    """Write high-risk predicted clusters for review."""
     risky: list[dict[str, Any]] = []
     for local_pos, row_index in enumerate(test_idx):
         if int(pred[local_pos]) != 1:
@@ -1163,6 +1183,7 @@ def write_risky_clusters(path: Path, rows: list[dict[str, Any]], test_idx: np.nd
 
 
 def write_csv(path: str | Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
+    """Write rows to CSV with stable field ordering."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -1172,6 +1193,7 @@ def write_csv(path: str | Path, rows: list[dict[str, Any]], columns: list[str]) 
 
 
 def weighted_base_pool(rows: list[dict[str, str]], rng: random.Random) -> list[dict[str, str]]:
+    """Build a weighted product pool for augmentation sampling."""
     weighted: list[dict[str, str]] = []
     for row in rows:
         weight = 1 + int(bool(row.get("sku"))) + int(bool(row.get("description"))) + int(bool(row.get("dimension")))
@@ -1181,12 +1203,14 @@ def weighted_base_pool(rows: list[dict[str, str]], rng: random.Random) -> list[d
 
 
 def copy_product_row(row: dict[str, str], source_id: int) -> dict[str, str]:
+    """Copy a product row while assigning a new source id."""
     copied = {column: row.get(column, "") for column in PRODUCT_COLUMNS}
     copied["id"] = str(source_id)
     return copied
 
 
 def next_available_id(start: int, existing: set[str]) -> int:
+    """Find next available id."""
     value = start
     while str(value) in existing:
         value += 1
@@ -1194,6 +1218,7 @@ def next_available_id(start: int, existing: set[str]) -> int:
 
 
 def mutate_description_light(row: dict[str, str], rng: random.Random) -> str:
+    """Apply a light description mutation for positive augmentation."""
     text = row.get("description", "")
     if not text:
         row["description"] = '["Produto original com detalhes resumidos pelo varejista."]'
@@ -1203,6 +1228,7 @@ def mutate_description_light(row: dict[str, str], rng: random.Random) -> str:
 
 
 def mutate_missing_field(row: dict[str, str], rng: random.Random) -> str:
+    """Drop a non-critical field for positive augmentation."""
     candidates = [field for field in ["brand", "description", "specs", "dimension", "img_links", "sku", "price"] if row.get(field)]
     if not candidates:
         return "missing:none"
@@ -1212,6 +1238,7 @@ def mutate_missing_field(row: dict[str, str], rng: random.Random) -> str:
 
 
 def mutate_title_order(row: dict[str, str], rng: random.Random) -> str:
+    """Reorder title fragments for positive augmentation."""
     pieces = [piece.strip() for piece in re.split(r"[,|-]", row.get("prod_name", "")) if piece.strip()]
     if len(pieces) >= 2:
         rng.shuffle(pieces)
@@ -1222,6 +1249,7 @@ def mutate_title_order(row: dict[str, str], rng: random.Random) -> str:
 
 
 def mutate_price_and_retailer(row: dict[str, str], rng: random.Random) -> str:
+    """Jitter price and retailer fields for positive augmentation."""
     try:
         cents = int(float(str(row.get("price", "")).replace(",", ".")))
         row["price"] = str(max(1, int(round(cents * (1 + rng.uniform(-0.12, 0.12))))))
@@ -1233,18 +1261,21 @@ def mutate_price_and_retailer(row: dict[str, str], rng: random.Random) -> str:
 
 
 def mutate_identifier_presence(row: dict[str, str], rng: random.Random) -> str:
+    """Remove or alter weak identifiers for augmentation."""
     if row.get("sku"):
         row["sku"] = "" if rng.random() < 0.6 else row["sku"]
     return "identifier_missing_or_specs_sparse"
 
 
 def mutate_brand_case(row: dict[str, str], rng: random.Random) -> str:
+    """Change brand casing for positive augmentation."""
     if row.get("brand"):
         row["brand"] = row["brand"].upper() if rng.random() < 0.5 else row["brand"].title()
     return "brand_case_and_spacing"
 
 
 def variant_signature(row: dict[str, str]) -> dict[str, object]:
+    """Detect variant signature."""
     text = " ".join([row.get("prod_name", ""), row.get("dimension", ""), row.get("specs", "")])
     size_match = SIZE_RE.search(text)
     pack_match = PACK_RE.search(text)
@@ -1258,6 +1289,7 @@ def variant_signature(row: dict[str, str]) -> dict[str, object]:
 
 
 def positive_variant_preserved(before: dict[str, object], after: dict[str, object]) -> bool:
+    """Validate positive variant preserved."""
     for key, before_value in before.items():
         if before_value is not None and after.get(key) != before_value:
             return False
@@ -1265,11 +1297,13 @@ def positive_variant_preserved(before: dict[str, object], after: dict[str, objec
 
 
 def make_weak_shared_sku(row: dict[str, str]) -> None:
+    """Create make weak shared sku."""
     if not row.get("sku"):
         row["sku"] = re.sub(r"\W+", "", row.get("brand", "").upper())[:8] + "-SHARED"
 
 
 def apply_variant_conflict(row: dict[str, str], rng: random.Random) -> str:
+    """Inject a variant conflict into a hard-negative row."""
     title = row.get("prod_name", "")
     size_match = SIZE_RE.search(" ".join([title, row.get("dimension", "")]))
     if size_match:
@@ -1287,6 +1321,7 @@ def apply_variant_conflict(row: dict[str, str], rng: random.Random) -> str:
 
 
 def cosine(left: list[float], right: list[float]) -> float:
+    """Compute cosine."""
     left_array = np.array(left, dtype=float)
     right_array = np.array(right, dtype=float)
     denom = float(np.linalg.norm(left_array) * np.linalg.norm(right_array))

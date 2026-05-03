@@ -334,6 +334,7 @@ def salient_title_tokens(product: NormalizedProduct) -> set[str]:
 
 
 def jaccard_score(left_values: set[str], right_values: set[str], *, default: float = 0.0) -> float:
+    """Compute jaccard score."""
     if not left_values and not right_values:
         return default
     if not left_values or not right_values:
@@ -342,6 +343,7 @@ def jaccard_score(left_values: set[str], right_values: set[str], *, default: flo
 
 
 def safe_ratio_diff(left_value: int | float | None, right_value: int | float | None) -> float:
+    """Safely compute safe ratio diff."""
     if left_value is None or right_value is None:
         return math.nan
     left_float = float(left_value)
@@ -352,6 +354,7 @@ def safe_ratio_diff(left_value: int | float | None, right_value: int | float | N
 
 
 def size_flags(left: NormalizedProduct, right: NormalizedProduct) -> tuple[float, float]:
+    """Compute size-match and size-conflict indicator features."""
     if left.size_value is None or right.size_value is None:
         return 0.0, 0.0
     if left.size_unit != right.size_unit:
@@ -367,6 +370,7 @@ def variant_conflict(
     left_salient: set[str] | None = None,
     right_salient: set[str] | None = None,
 ) -> float:
+    """Detect variant conflict."""
     if left.brand_norm != right.brand_norm:
         return 0.0
     left_salient = salient_title_tokens(left) if left_salient is None else left_salient
@@ -484,6 +488,7 @@ def contradiction_features(
 
 
 def product_identity_tokens(product: NormalizedProduct) -> set[str]:
+    """Extract identity-bearing tokens from normalized product text."""
     text = " ".join(
         part
         for part in (
@@ -498,6 +503,7 @@ def product_identity_tokens(product: NormalizedProduct) -> set[str]:
 
 
 def variant_tokens(product: NormalizedProduct, tokens: set[str]) -> set[str]:
+    """Detect variant tokens."""
     values = {token for token in tokens if token in COLOR_VARIANT_TERMS}
     normalized_title = normalize_text(product.name_raw or product.name_norm)
     for match in SHADE_CODE_RE.findall(normalized_title):
@@ -518,14 +524,17 @@ def _size_like_variant_token(token: str) -> bool:
 
 
 def component_terms(tokens: set[str]) -> set[str]:
+    """Extract component terms."""
     return {token for token in tokens if token in KIT_COMPONENT_TERMS}
 
 
 def form_terms(tokens: set[str]) -> set[str]:
+    """Extract form terms."""
     return {token for token in tokens if token in PRODUCT_FORM_TERMS}
 
 
 def is_kit_product(product: NormalizedProduct, tokens: set[str], components: set[str]) -> bool:
+    """Return whether is kit product."""
     if product.pack_count is not None and product.pack_count > 1:
         return True
     if tokens & KIT_MARKERS:
@@ -535,6 +544,7 @@ def is_kit_product(product: NormalizedProduct, tokens: set[str], components: set
 
 
 def exact_identifier_present(left: NormalizedProduct, right: NormalizedProduct) -> bool:
+    """Return whether exact identifier evidence is present for the pair."""
     return any(
         left.identifiers.get(key) and left.identifiers.get(key) == right.identifiers.get(key)
         for key in ("ean", "gtin", "upc", "asin", "sku")
@@ -542,10 +552,12 @@ def exact_identifier_present(left: NormalizedProduct, right: NormalizedProduct) 
 
 
 def same_brand_or_shared_identifier(left: NormalizedProduct, right: NormalizedProduct) -> bool:
+    """Return whether same brand or shared identifier."""
     return (bool(left.brand_norm) and left.brand_norm == right.brand_norm) or exact_identifier_present(left, right)
 
 
 def high_title_containment(left_title: str, right_title: str) -> bool:
+    """Return whether high title containment."""
     if not left_title or not right_title:
         return False
     left_tokens = set(left_title.split())
@@ -557,6 +569,7 @@ def high_title_containment(left_title: str, right_title: str) -> bool:
 
 
 def retrieval_layer_count(retrieval: Mapping[str, float], has_identifier: bool, semantic_sim: float) -> float:
+    """Extract retrieval layer count."""
     return float(
         int(has_identifier)
         + int(float(retrieval.get("lexical", 0.0)) > 0.0)
@@ -566,24 +579,28 @@ def retrieval_layer_count(retrieval: Mapping[str, float], has_identifier: bool, 
 
 
 def ratio(left: str, right: str) -> float:
+    """Compute ratio."""
     if not left or not right:
         return 0.0
     return clamp01(float(fuzz.ratio(left, right)) / 100.0)
 
 
 def token_set_ratio(left: str, right: str) -> float:
+    """Compute token set ratio."""
     if not left or not right:
         return 0.0
     return clamp01(float(fuzz.token_set_ratio(left, right)) / 100.0)
 
 
 def partial_ratio(left: str, right: str) -> float:
+    """Compute partial ratio."""
     if not left or not right:
         return 0.0
     return clamp01(float(fuzz.partial_ratio(left, right)) / 100.0)
 
 
 def clamp01(value: float) -> float:
+    """Clamp clamp01."""
     if math.isnan(float(value)):
         return 0.0
     return max(0.0, min(1.0, float(value)))

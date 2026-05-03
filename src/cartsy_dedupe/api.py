@@ -23,6 +23,7 @@ from .text import normalize_text
 
 
 def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "models") -> FastAPI:
+    """Create the FastAPI application for browsing completed run artifacts."""
     root = Path(os.getenv("CARTSY_RUNS_ROOT", str(runs_root)))
     models_dir = Path(os.getenv("CARTSY_MODELS_ROOT", str(models_root)))
     app = FastAPI(
@@ -41,10 +42,12 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/health")
     def health() -> dict[str, object]:
+        """Return API health status."""
         return {"ok": True, "runs_root": str(root)}
 
     @app.get("/models")
     def list_models() -> dict[str, object]:
+        """Return list models."""
         models = []
         if models_dir.exists():
             for model_subdir in sorted(models_dir.iterdir(), reverse=True):
@@ -74,6 +77,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/models/{model_id}")
     def get_model_by_id(model_id: str) -> dict[str, object]:
+        """Return get model by id."""
         model_subdir = models_dir / model_id
         if not model_subdir.exists() or not model_subdir.is_dir():
             raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
@@ -138,6 +142,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/model")
     def get_model_info() -> dict[str, object]:
+        """Return get model info."""
         metrics_path = models_dir / "metrics.json"
         if not metrics_path.exists():
             raise HTTPException(status_code=404, detail="No trained model found. Run `cartsy-dedupe train-model` first.")
@@ -199,6 +204,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/runs")
     def list_runs() -> dict[str, object]:
+        """Return list runs."""
         runs = []
         if root.exists():
             for run_dir in sorted(root.iterdir(), reverse=True):
@@ -221,6 +227,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/runs/{run_id}/summary")
     def get_summary(run_id: str) -> dict[str, object]:
+        """Return get summary."""
         return read_summary(resolve_run(root, run_id))
 
     @app.get("/runs/{run_id}/products")
@@ -235,6 +242,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ) -> dict[str, object]:
+        """Return list products."""
         run_dir = resolve_run(root, run_id)
         rows = filter_assignments(
             read_assignments(run_dir),
@@ -254,6 +262,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         limit: int = Query(10, ge=1, le=100),
         backend: Literal["auto", "postgres", "artifacts"] = "auto",
     ) -> dict[str, object]:
+        """Serve product search results for one run."""
         run_dir = resolve_run(root, run_id)
         try:
             results = search_products(run_dir, q, limit=limit, backend=backend)
@@ -268,6 +277,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         type: Literal["group", "offer", "pair", "near_miss", "summary"] | None = None,
         limit: int = Query(10, ge=1, le=100),
     ) -> dict[str, object]:
+        """Serve semantic artifact search results for one run."""
         try:
             results = search_artifacts(q, run_id=run_id, artifact_type=type, limit=limit)
         except RuntimeError as exc:
@@ -286,6 +296,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ) -> dict[str, object]:
+        """Return list groups."""
         run_dir = resolve_run(root, run_id)
         groups = read_groups(run_dir)
         query_norm = normalize_text(q)
@@ -329,6 +340,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/runs/{run_id}/groups/{dedupe_id}")
     def group_detail(run_id: str, dedupe_id: str) -> dict[str, object]:
+        """Serve one dedupe group with its offers."""
         try:
             return get_group(resolve_run(root, run_id), dedupe_id)
         except LookupError as exc:
@@ -336,6 +348,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/runs/{run_id}/groups/{dedupe_id}/graph")
     def group_graph(run_id: str, dedupe_id: str) -> dict[str, object]:
+        """Serve graph data for one dedupe group."""
         try:
             return build_group_graph(resolve_run(root, run_id), dedupe_id)
         except LookupError as exc:
@@ -350,6 +363,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ) -> dict[str, object]:
+        """Return list near misses."""
         run_dir = resolve_run(root, run_id)
         rows = read_near_misses(run_dir)
         query_norm = normalize_text(q)
@@ -389,6 +403,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ) -> dict[str, object]:
+        """Return list pairs."""
         run_dir = resolve_run(root, run_id)
         rows = read_candidate_pairs(run_dir)
         out: list[dict[str, object]] = []
@@ -414,6 +429,7 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
         max_groups: int = Query(300, ge=1, le=5000),
         max_singletons: int = Query(0, ge=0, le=5000),
     ) -> dict[str, object]:
+        """Serve a compact graph of groups, offers, and near misses."""
         run_dir = resolve_run(root, run_id)
         assignments = read_assignments(run_dir)
 
@@ -503,12 +519,14 @@ def create_app(*, runs_root: str | Path = "outputs", models_root: str | Path = "
 
     @app.get("/runs/{run_id}/explain")
     def pair_explanation(run_id: str, source_id_a: str, source_id_b: str) -> dict[str, object]:
+        """Build pair explanation."""
         return explain_pair(resolve_run(root, run_id), source_id_a, source_id_b)
 
     return app
 
 
 def resolve_run(root: Path, run_id: str) -> Path:
+    """Resolve a run id or path into a concrete run directory."""
     run_dir = root / run_id
     if not run_dir.exists() or not run_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
@@ -516,6 +534,7 @@ def resolve_run(root: Path, run_id: str) -> Path:
 
 
 def read_summary(run_dir: Path) -> dict[str, object]:
+    """Read summary_report.json from a run directory."""
     path = run_dir / "summary_report.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"summary_report.json not found for {run_dir.name}")
@@ -532,6 +551,7 @@ def filter_assignments(
     decision: str | None,
     min_confidence: float | None,
 ) -> list[dict[str, str]]:
+    """Filter product assignments by query and retailer."""
     query_norm = normalize_text(q)
     brand_norm = normalize_text(brand)
     filtered = []
@@ -569,6 +589,7 @@ def filter_assignments(
 
 
 def safe_float(value: object) -> float:
+    """Safely compute safe float."""
     try:
         return float(value)
     except (TypeError, ValueError):

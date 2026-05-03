@@ -113,6 +113,7 @@ Clusters = dict[str, dict[str, object]]
 
 
 def cosine_similarity(left: Sequence[float] | None, right: Sequence[float] | None) -> float:
+    """Compute cosine similarity."""
     if not left or not right or len(left) != len(right):
         return 0.0
     dot = 0.0
@@ -130,6 +131,7 @@ def cosine_similarity(left: Sequence[float] | None, right: Sequence[float] | Non
 
 
 def coerce_embedding(value: Any) -> list[float]:
+    """Coerce stored embedding values into a numeric vector."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -143,6 +145,7 @@ def coerce_embedding(value: Any) -> list[float]:
 
 
 def env_flag(name: str, default: bool) -> bool:
+    """Read a boolean feature flag from the environment."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -151,6 +154,7 @@ def env_flag(name: str, default: bool) -> bool:
 
 @dataclass(slots=True)
 class RowRetrievalProfile:
+    """Cheap-evidence profile controlling whether a row enters vector retrieval."""
     has_exact: bool = False
     fts_hit_count: int = 0
     trigram_hit_count: int = 0
@@ -165,6 +169,7 @@ class DedupePipeline:
     name = "postgres_pgvector"
 
     def __init__(self, *, dev: bool = False) -> None:
+        """Initialize the object state used by this component."""
         load_dotenv(dotenv_path=Path.cwd() / ".env")
         self.database_url = os.getenv("DATABASE_URL", "postgresql://cartsy:cartsy@localhost:5432/cartsy_matcher")
         self.embedding_provider = embedding_provider_name()
@@ -187,6 +192,7 @@ class DedupePipeline:
         self.retrieval_layer_cache_status: dict[str, dict[str, object]] = {}
 
     def load_ml_model(self, model_path: str | Path | None) -> None:
+        """Load and validate the optional logistic-regression model bundle."""
         if model_path is None:
             raise RuntimeError(
                 "The dedupe pipeline now requires a logistic-regression model. "
@@ -206,6 +212,7 @@ class DedupePipeline:
         self.ml_model_bundle = bundle
 
     def predict_ml_score(self, features: dict[str, float]) -> float:
+        """Predict a calibrated merge probability for one feature row."""
         if self.ml_model_bundle is None:
             raise RuntimeError(
                 "Logistic-regression model is not loaded. Pass --ml-model or set CARTSY_ML_MODEL_PATH."
@@ -219,11 +226,13 @@ class DedupePipeline:
         return float(model.predict_proba(vector)[0][1])
 
     def ml_threshold(self, fallback: float) -> float:
+        """Return the active ML merge threshold from config or the model bundle."""
         if self.ml_model_bundle is None:
             return fallback
         return max(float(self.ml_model_bundle.get("threshold", fallback)), fallback)
 
     def dev_log(self, message: str) -> None:
+        """Print a development log message when dev mode is enabled."""
         if self.dev:
             print(f"[dev] {message}")
 
@@ -236,11 +245,13 @@ class DedupePipeline:
         unit: str,
         mininterval: float = 0.2,
     ) -> Iterable[T]:
+        """Wrap an iterable in a progress bar when dev mode is enabled."""
         if not self.dev:
             return iterable
         return tqdm(iterable, total=total, desc=desc, unit=unit, mininterval=mininterval)
 
     def normalize_rows(self, rows: Iterable[dict[str, str]]) -> list[NormalizedProduct]:
+        """Normalize raw product rows into the canonical product schema."""
         products: list[NormalizedProduct] = []
         row_count = len(rows) if isinstance(rows, Sequence) else None
         for idx, row in enumerate(
@@ -259,6 +270,7 @@ class DedupePipeline:
         return products
 
     def load_normalized_products(self, products: list[NormalizedProduct]) -> None:
+        """Load cached normalized products into Postgres staging tables."""
         self.dev_log("loading cached normalized rows into Postgres staging tables")
         with self.connect() as conn:
             self.reset_database(conn)
@@ -274,6 +286,7 @@ class DedupePipeline:
         retrieval_env: dict[str, str | None] | None = None,
         retrieval_code: dict[str, str] | None = None,
     ) -> tuple[PairBlocks, dict[str, int]]:
+        """Generate candidate product pairs from exact, lexical, trigram, and vector retrieval."""
         self.dev_log("running retrieval stages: exact -> lexical -> trigram -> vector")
         with self.connect() as conn:
             pair_blocks, layer_counts = self.retrieve_candidate_pairs(
@@ -320,6 +333,7 @@ class DedupePipeline:
         config: PipelineConfig,
         normalization_key: str | None = None,
     ) -> tuple[list[CandidatePair], int]:
+        """Score candidate pairs with rule guards, ML probabilities, and evidence thresholds."""
         candidate_pairs: list[CandidatePair] = []
         semantic_similarities = self.compute_pair_semantic_similarities(
             products,
@@ -354,6 +368,7 @@ class DedupePipeline:
         *,
         normalization_key: str | None = None,
     ) -> dict[tuple[int, int], float]:
+        """Compute dense semantic similarity for every scored candidate pair."""
         if not pair_blocks:
             return {}
         pair_product_indexes = {index for pair in pair_blocks for index in pair}
@@ -377,6 +392,7 @@ class DedupePipeline:
         return similarities
 
     def fetch_embeddings_by_index(self, conn, indexes: set[int]) -> dict[int, list[float]]:
+        """Fetch product embeddings keyed by product index."""
         if not indexes:
             return {}
         with conn.cursor() as cur:
@@ -398,6 +414,7 @@ class DedupePipeline:
         candidate_pairs: list[CandidatePair],
         id_to_index: dict[str, int],
     ) -> tuple[Clusters, dict[str, int]]:
+        """Build dedupe clusters from accepted pairwise merge edges."""
         return build_clusters(products, candidate_pairs, id_to_index)
 
     def build_summary_report(
@@ -411,6 +428,7 @@ class DedupePipeline:
         scored_candidate_pairs: int,
         elapsed_seconds: float,
     ) -> dict[str, object]:
+        """Aggregate run metrics, confidence distributions, and diagnostic slices."""
         report = build_summary_report(
             products=products,
             candidate_pairs=candidate_pairs,
@@ -430,6 +448,7 @@ class DedupePipeline:
         return report
 
     def connect(self):
+        """Open a Postgres connection and register pgvector adapters."""
         if psycopg is None:
             raise RuntimeError("Install psycopg[binary] and pgvector before running the Postgres pipeline.")
         try:
@@ -442,6 +461,7 @@ class DedupePipeline:
         return conn
 
     def reset_database(self, conn) -> None:
+        """Recreate the working tables used by one pipeline run."""
         if register_vector is None:
             raise RuntimeError("Install pgvector before running the Postgres pipeline.")
         vector_type = f"vector({self.embedding_dimensions})"
@@ -505,6 +525,7 @@ class DedupePipeline:
         conn.commit()
 
     def insert_products(self, conn, products: list[NormalizedProduct]) -> None:
+        """Insert normalized products into Postgres for retrieval."""
         rows = []
         for index, product in enumerate(products):
             record = asdict(product)
@@ -567,6 +588,7 @@ class DedupePipeline:
         conn.commit()
 
     def insert_exact_keys(self, conn, products: list[NormalizedProduct]) -> None:
+        """Insert identifier and canonical URL exact-match keys."""
         rows: list[tuple[int, str, str]] = []
         for index, product in enumerate(products):
             for key, value in exact_keys(product).items():
@@ -586,6 +608,7 @@ class DedupePipeline:
         normalization_key: str | None = None,
         force: bool = False,
     ) -> None:
+        """Embed products and persist vectors for pgvector retrieval."""
         if self.vector_candidates <= 0 and not force:
             self.dev_log("skipping embedding generation because CARTSY_VECTOR_CANDIDATES <= 0")
             return
@@ -788,6 +811,7 @@ class DedupePipeline:
         retrieval_env: dict[str, str | None] | None = None,
         retrieval_code: dict[str, str] | None = None,
     ) -> tuple[PairBlocks, Counter[str]]:
+        """Retrieve candidate pair evidence from the Postgres-backed cascade."""
         pairs: PairBlocks = defaultdict(set)
         counts: Counter[str] = Counter()
         self.dev_log("retrieval stage: exact keys")
@@ -883,6 +907,7 @@ class DedupePipeline:
         lexical_rows: list[tuple[int, int, str]],
         trigram_rows: list[tuple[int, int, str]],
     ) -> dict[int, RowRetrievalProfile]:
+        """Decide which rows are eligible for vector retrieval based on cheaper evidence."""
         profiles: dict[int, RowRetrievalProfile] = defaultdict(RowRetrievalProfile)
         for left, right, _evidence in exact_rows:
             profiles[left].has_exact = True
@@ -915,6 +940,7 @@ class DedupePipeline:
         *,
         product_count: int,
     ) -> tuple[set[int], set[int], Counter[str]]:
+        """Collect vector anchor and pool row indexes from retrieval profiles."""
         anchor_indexes: set[int] = set()
         embedding_pool_indexes: set[int] = set()
         stats: Counter[str] = Counter()
@@ -958,6 +984,7 @@ class DedupePipeline:
         retrieval_env: dict[str, str | None] | None,
         retrieval_code: dict[str, str] | None,
     ) -> list[tuple[int, int, str]]:
+        """Read a retrieval layer from cache or compute it from Postgres."""
         cache_enabled = stage_cache_enabled()
         layer_env = self.layer_cache_env(layer, retrieval_env) if retrieval_env is not None else None
         if normalization_key and layer_env is not None and retrieval_code is not None:
@@ -1011,6 +1038,7 @@ class DedupePipeline:
 
     @staticmethod
     def layer_cache_env(layer: str, retrieval_env: dict[str, str | None]) -> dict[str, str | None]:
+        """Build the environment fingerprint for one retrieval layer."""
         env_keys_by_layer = {
             "exact": tuple(),
             "lexical": ("CARTSY_FTS_CANDIDATES",),
@@ -1040,6 +1068,7 @@ class DedupePipeline:
         layer_params: dict[str, object],
         enabled: bool,
     ) -> tuple[Path | None, dict[str, Any] | None]:
+        """Find a compatible retrieval-layer cache from previous fanout settings."""
         if not enabled:
             return None, None
         stage_name = f"retrieve_candidates:{layer}"
@@ -1076,6 +1105,7 @@ class DedupePipeline:
         normalization_key: str,
         layer_params: dict[str, object],
     ) -> bool:
+        """Check whether cached retrieval metadata can be reused for this layer."""
         return (
             metadata.get("stage") == stage_name
             and metadata.get("normalization_key") == normalization_key
@@ -1089,6 +1119,7 @@ class DedupePipeline:
         sql: str,
         params: tuple[object, ...],
     ) -> list[tuple[int, int, str]]:
+        """Fetch one retrieval layer from Postgres and normalize evidence rows."""
         show_progress = layer in {"lexical", "trigram", "vector"}
         cursor_name = f"cartsy_{layer}_{int(perf_counter() * 1_000_000)}"
         collected: list[tuple[int, int, str]] = []
@@ -1121,6 +1152,7 @@ class DedupePipeline:
         rows: list[tuple[int, int, str]],
         max_candidate_pairs: int | None,
     ) -> None:
+        """Merge retrieval evidence rows into the pair-block map."""
         if max_candidate_pairs is not None and len(pairs) >= max_candidate_pairs:
             return
         for left, right, evidence in rows:
@@ -1138,6 +1170,7 @@ class DedupePipeline:
         *,
         semantic_sim: float = 0.0,
     ) -> CandidatePair:
+        """Convert one retrieved pair into scored features and a merge/no-merge decision."""
         rule_decision = evaluate_rule(left, right)
         retrieval = postgres_retrieval_features(block_keys)
         pair_features = build_pair_features(
@@ -1364,6 +1397,7 @@ def decision_reason_labels(
     labels: list[str] = []
 
     def add(label: str, condition: bool) -> None:
+        """Add counts or values into the accumulator."""
         if condition and label not in labels:
             labels.append(label)
 
@@ -1483,6 +1517,7 @@ def run_pipeline(
     limit: int | None = None,
     dev: bool = False,
 ) -> dict[str, object]:
+    """Execute the full ingestion, retrieval, scoring, clustering, and output pipeline."""
     run_started_at = datetime.now(timezone.utc)
     started = perf_counter()
     resolved_input_path = Path(input_path).resolve()
@@ -1493,6 +1528,7 @@ def run_pipeline(
     cache_enabled = stage_cache_enabled()
 
     def run_stage(name: str, action, *, items: int = 0):
+        """Run one pipeline stage with timing and optional cache metadata."""
         print(f"starting stage: {name}")
         stage_started = perf_counter()
         stage_started_at = datetime.now(timezone.utc)
@@ -1523,6 +1559,7 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: load_rows")
 
     def load_rows_action():
+        """Load input rows for the pipeline run."""
         return load_rows(input_path, limit=limit)
 
     rows = run_stage("load_rows", load_rows_action)
@@ -1532,6 +1569,7 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: normalize_and_load_postgres")
 
     def normalize_and_load_action():
+        """Normalize raw rows and load them into Postgres."""
         cached = read_cache_payload(cache_path, enabled=cache_enabled)
         if cached is not None:
             products = read_normalization_cache(cache_path) or []
@@ -1599,6 +1637,7 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: retrieve_candidates")
 
     def retrieve_candidates_action():
+        """Retrieve and cache candidate-pair evidence."""
         cached = read_cache_payload(retrieval_path, enabled=cache_enabled)
         if cached is not None:
             pair_blocks = pair_blocks_from_records(cached.get("pair_blocks") or [])
@@ -1652,6 +1691,7 @@ def run_pipeline(
     dedupe_pipeline.dev_log("stage start: score_candidates")
 
     def score_candidates_action():
+        """Score and cache candidate-pair decisions."""
         cached = read_cache_payload(scoring_path, enabled=cache_enabled)
         if cached is not None:
             stage_cache_status["score_candidates"]["used"] = 1
@@ -1693,6 +1733,7 @@ def run_pipeline(
     stage_cache_status["cluster"] = make_stage_cache_status(cluster_path, cluster_key, enabled=cache_enabled)
 
     def cluster_action():
+        """Cluster accepted merge edges into dedupe groups."""
         cached = read_cache_payload(cluster_path, enabled=cache_enabled)
         if cached is not None:
             stage_cache_status["cluster"]["used"] = 1
@@ -1747,6 +1788,7 @@ def run_pipeline(
     )
 
     def write_outputs_action():
+        """Write final run artifacts and return their paths."""
         dedupe_pipeline.dev_log("stage start: write_outputs")
         write_outputs(
             output_path=output_path,

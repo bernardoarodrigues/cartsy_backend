@@ -1,98 +1,74 @@
 # Cartsy Product Deduplication Pipeline
 
-Production-shaped product entity resolution for the Cartsy challenge. The pipeline retrieves candidate product pairs with Postgres exact/FTS/trigram/vector layers, evaluates each pair through a condition-based certainty chain (hard-blocking contradictions and fast-pathing exact identifier matches), and uses a calibrated logistic-regression model with cross-validated threshold selection for all uncertain cases.
+Production-shaped product entity resolution for the Cartsy product-data challenge. The project ingests messy product CSVs, normalizes them into a stable schema, retrieves candidate duplicate pairs with Postgres exact/FTS/trigram/vector layers, scores uncertain pairs with a calibrated logistic-regression model, and writes queryable deduped-product artifacts.
 
-The canonical pipeline walkthrough is in `PIPELINE.md`.
+The implementation is intentionally CLI-first: reviewers can run the batch pipeline, inspect saved artifacts, query a completed run from the terminal, or start the optional read-only REST API.
 
-## Setup From Scratch
+## What Is Included
+
+- `src/cartsy_dedupe/`: ingestion, normalization, retrieval, scoring, clustering, artifact search, API, and training code.
+- `data/products_first20.csv`: tiny public smoke fixture. The full challenge CSVs are expected under `data/` but are not committed because they are large/local inputs.
+- `models/final_submission/`: committed final logistic-regression model plus training diagnostics.
+- `outputs/sample/`: small sample output snapshot from the final full-data run.
+- `PIPELINE.md`: operational pipeline walkthrough and runtime trade-offs.
+- `TRAINING.md`: supervised training, augmentation, threshold selection, and artifact guide.
+
+## Quick Setup
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m pip install -e .
 cp .env.example .env
 docker compose up -d postgres
 ```
 
-Choose an embedding backend in `.env`: `CARTSY_EMBEDDING_PROVIDER=openai` uses OpenAI and requires `OPENAI_API_KEY`; `CARTSY_EMBEDDING_PROVIDER=sentence-transformers` runs local sentence-transformers embeddings. Keep `CARTSY_EMBEDDING_DIMENSIONS` aligned with the model because pgvector columns have fixed width.
-
-## Train The Logistic Model
-
-Train from the merged 68k labels plus controlled augmentation. The 68k label file is still highly imbalanced, so augmentation should add guarded positive duplicates and a smaller set of dirty-identifier hard negatives rather than simply adding more singleton negatives.
-
-```bash
-.venv/bin/cartsy-dedupe augment-training-data \
-  --input data/products.csv \
-  --ground-truth data/ground_truth_merged.csv \
-  --output-data data/dataset_merged_augmented.csv \
-  --output-ground-truth data/ground_truth_merged_augmented.csv \
-  --output-manifest data/augmentation_manifest_merged.csv \
-  --duplicate-samples 5000 \
-  --hard-negative-samples 1000
-```
-
-```bash
-.venv/bin/cartsy-dedupe train-model \
-  --products data/dataset_merged_augmented.csv \
-  --ground-truth data/ground_truth_merged_augmented.csv \
-  --output-dir models \
-  --target-precision 0.97 \
-  --min-recall 0.50 \
-  --cv-folds 5 \
-  --max-positive-pairs 20000 \
-  --max-hard-negative-pairs 60000 \
-  --use-embeddings
-```
-
-The model threshold is precision-constrained, with a recall guard. If the only thresholds satisfying the precision floor merge almost nothing, training records that the floor was unmet and uses the best-F1 operating point instead. Ties prefer the lower threshold that preserves the same precision/recall/F1 so calibrated plateaus do not become needlessly strict `0.99` cutoffs.
-
-Training writes:
+`requirements.txt` installs the package in editable mode plus runtime/test dependencies. The default `.env.example` points at the committed final model:
 
 ```text
-models/cartsy_logreg.joblib
-models/metrics.json
-models/threshold_curve.csv
-models/calibration_threshold_curve.csv
-models/feature_coefficients.csv
-models/false_positives.csv
-models/false_negatives.csv
-models/top_risky_clusters.csv
+CARTSY_ML_MODEL_PATH=models/final_submission/cartsy_logreg.joblib
 ```
 
-Set `CARTSY_ML_MODEL_PATH=models/cartsy_logreg.joblib` in `.env`, or pass `--ml-model`.
+For full vector retrieval, choose one embedding backend:
 
-## Run Deduplication
+- OpenAI: keep `CARTSY_EMBEDDING_PROVIDER=openai`, set `OPENAI_API_KEY`, and keep `CARTSY_EMBEDDING_DIMENSIONS=1536`.
+- Local: set `CARTSY_EMBEDDING_PROVIDER=sentence-transformers`, usually with `CARTSY_EMBEDDING_DIMENSIONS=384` for `all-MiniLM-L6-v2`.
+
+## No-Database Demo
+
+The committed sample output can be queried without Postgres, OpenAI, or the full dataset:
+
+```bash
+.venv/bin/cartsy-dedupe search "wella" --run outputs/sample --backend artifacts --limit 5
+.venv/bin/cartsy-dedupe group prod_da4b9237bacc --run outputs/sample
+```
+
+Sample full-run summary snapshot:
+
+```text
+input_records=246,969
+candidate_pairs_scored=3,161,740
+candidate_pairs_kept=145,170
+merged_pairs=5,044
+final_unique_products=245,434
+duplicate_records_grouped=1,535
+```
+
+## Run The Pipeline
+
+Place the full challenge CSV at `data/products.csv`, then run:
 
 ```bash
 .venv/bin/cartsy-dedupe run \
   --input data/products.csv \
   --output outputs \
-  --ml-model models/cartsy_logreg.joblib \
+  --ml-model models/final_submission/cartsy_logreg.joblib \
   --merge-threshold 0.84 \
-  --evidence-merge-threshold 0.70 \
+  --evidence-merge-threshold 0.78 \
   --near-miss-threshold 0.70
 ```
 
-Use `--dev` for progress bars and stage logs. Use `--max-block-size none --max-candidate-pairs none` for uncapped validation when the machine and database can handle it.
-
-Run artifacts go under timestamped directories such as `outputs/run_20260501_193000`.
-
-Evaluate completed runs against labels before trusting a model:
-
-```bash
-.venv/bin/cartsy-dedupe evaluate-run \
-  --run outputs/run_20260501_193000 \
-  --ground-truth data/ground_truth_merged.csv
-```
-
-This writes `labeled_evaluation.json` in the run directory with overall precision/recall plus risky slices such as vector-only and generic-brand candidate pairs. Blank `deduped_id` labels are ignored by default so accidental empty-label clusters do not inflate positives.
-
-For release checks, add floors such as `--min-precision 0.97 --min-recall 0.80 --min-vector-only-precision 0.95`; the command exits non-zero when any requested acceptance check fails.
-
-## Outputs
-
-Each run writes:
+Run artifacts are written under timestamped directories such as `outputs/run_20260503_130136`:
 
 ```text
 normalized_products.parquet
@@ -103,40 +79,89 @@ near_miss_pairs.csv
 summary_report.json
 ```
 
-`summary_report.json` includes candidate counts, merge counts, threshold sensitivity, clustering diagnostics, stage timings, embedding usage/cost estimates when using OpenAI, and per-stage cache paths for debugging. Product embedding caching is available to avoid recomputing embeddings for unchanged products across repeated runs.
-Pair artifacts separate `ml_score`, `evidence_score`, `decision_threshold`, and `decision_reason`; `score` is the evidence confidence used for display and cluster confidence, not a policy-clamped copy of the model threshold. Non-rule ML merges require both `ml_score >= decision_threshold` and `evidence_score >= --evidence-merge-threshold`, which prevents sparse vector-only candidates from merging solely because the model is overconfident. Overconfident pairs blocked by the evidence threshold are retained as no-merge diagnostics even when their evidence score is below the usual near-miss threshold.
+Use `--dev` for progress logs. Use `--max-block-size none --max-candidate-pairs none` only for uncapped validation on a machine that can handle the larger candidate set.
 
-## Query Completed Runs
+## Query A Completed Run
 
 ```bash
-.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/run_20260501_193000 --limit 5
-.venv/bin/cartsy-dedupe group <dedupe_id> --run outputs/run_20260501_193000
-.venv/bin/cartsy-dedupe explain <source_id_a> <source_id_b> --run outputs/run_20260501_193000
-.venv/bin/cartsy-dedupe index-artifacts --run outputs/run_20260501_193000
-.venv/bin/cartsy-dedupe search-artifacts "similar lipstick different shade" --run-id run_20260501_193000 --type near_miss
+.venv/bin/cartsy-dedupe search "cetaphil hidratante" --run outputs/run_YYYYMMDD_HHMMSS --limit 5
+.venv/bin/cartsy-dedupe group <dedupe_id> --run outputs/run_YYYYMMDD_HHMMSS
+.venv/bin/cartsy-dedupe explain <source_id_a> <source_id_b> --run outputs/run_YYYYMMDD_HHMMSS
 ```
 
-## REST API
+Optional semantic indexing over completed artifacts:
+
+```bash
+.venv/bin/cartsy-dedupe index-artifacts --run outputs/run_YYYYMMDD_HHMMSS
+.venv/bin/cartsy-dedupe search-artifacts "similar lipstick different shade" --run-id run_YYYYMMDD_HHMMSS --type near_miss
+```
+
+Optional REST API:
 
 ```bash
 .venv/bin/cartsy-dedupe serve --runs-root outputs --host 127.0.0.1 --port 8000
 ```
 
-Useful endpoints:
+Useful endpoints include `/health`, `/runs`, `/runs/{run_id}/summary`, `/runs/{run_id}/products`, `/runs/{run_id}/groups/{dedupe_id}`, and `/runs/{run_id}/explain`.
 
-```text
-GET /health
-GET /runs
-GET /runs/{run_id}/summary
-GET /runs/{run_id}/products?q=cetaphil
-GET /runs/{run_id}/search?q=cetaphil%20hidratante&backend=artifacts
-GET /runs/{run_id}/artifact-search?q=similar%20lipstick&type=near_miss
-GET /runs/{run_id}/groups/{dedupe_id}
-GET /runs/{run_id}/explain?source_id_a=123&source_id_b=456
+## Architecture Overview
+
+The pipeline follows a conservative entity-resolution shape:
+
+1. Ingest CSV rows with tolerant parsing.
+2. Normalize product fields into `NormalizedProduct`: source id, retailer, names, brand, category, price, size, pack count, model tokens, identifiers, and quality flags.
+3. Load normalized rows into Postgres working tables.
+4. Retrieve candidate pairs with exact keys, FTS, trigram title similarity, and evidence-gated pgvector search.
+5. Build pairwise features in `src/cartsy_dedupe/features.py`.
+6. Apply deterministic rule guards for certain matches and hard contradictions.
+7. Score uncertain pairs with the calibrated logistic-regression model.
+8. Require both model probability and independent evidence for non-rule ML merges.
+9. Cluster accepted merge edges with connected components plus cluster-level contradiction guards.
+10. Write artifacts and a summary report with metrics, cache status, quality flags, and low-confidence diagnostics.
+
+The core trade-off is precision over aggressive grouping. Exact identifiers and trusted product URLs can fast-path obvious duplicates, but variants with conflicting size, shade, pack, kit/component, or form evidence are blocked or penalized even when text similarity is high.
+
+## Deduplication Strategy
+
+Two products are treated as the same purchasable item only when enough independent evidence agrees:
+
+- Exact evidence: shared EAN/GTIN/UPC, ASIN, same-retailer SKU, or trusted canonical product URL.
+- Lexical evidence: brand-aware FTS and trigram title similarity.
+- Semantic evidence: dense embedding cosine similarity for candidate-pair products.
+- Structured evidence: size, pack count, model tokens, identifiers, price ratio, category, and variant/kit/form contradiction features.
+- ML evidence: calibrated logistic regression trained on pairwise labels and hard negatives.
+
+`CERTAIN_BLOCK` rules override the model for factual contradictions. `CERTAIN_MATCH` rules bypass ML only for high-trust exact matches. Everything in between is scored by the model and must also pass `--evidence-merge-threshold`, which is the guard against sparse vector-only overconfidence.
+
+## Training
+
+See `TRAINING.md` for the full training pipeline. The committed final model was trained with controlled positive augmentation, dirty-identifier hard negatives, embeddings, calibration, threshold curves, false-positive/false-negative exports, feature coefficients, and risky-cluster diagnostics.
+
+## Evaluation
+
+```bash
+.venv/bin/cartsy-dedupe evaluate-run \
+  --run outputs/run_YYYYMMDD_HHMMSS \
+  --ground-truth data/ground_truth_merged.csv \
+  --min-precision 0.97 \
+  --min-recall 0.80 \
+  --min-vector-only-precision 0.95
 ```
+
+The evaluator writes `labeled_evaluation.json`. Blank `deduped_id` labels are ignored by default so accidental blank-label clusters do not inflate positives.
 
 ## Tests
 
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+The tests cover normalization, rule scoring, pairwise features, clustering, cache keys, artifact queries, API behavior, training helpers, and labeled evaluation.
+
+## What I Would Improve Next
+
+- Add a small reviewer web UI for low-confidence merges and near misses.
+- Add source-specific trust profiles so retailer SKU, marketplace URLs, and third-party catalog IDs can be weighted by source quality.
+- Add active-learning loops from false positives/false negatives back into training data.
+- Move full-run orchestration to a managed job runner when processing grows beyond one local Postgres instance.
+- Add incremental ingestion so unchanged source rows reuse existing normalized records and embeddings across daily feeds.

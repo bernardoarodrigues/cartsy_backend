@@ -15,6 +15,7 @@ from .utils.pipeline_helpers import batched
 
 @dataclass(frozen=True)
 class ArtifactDocument:
+    """Searchable representation of one completed-run artifact."""
     artifact_id: str
     artifact_type: str
     title: str
@@ -23,6 +24,7 @@ class ArtifactDocument:
 
 
 def build_artifact_documents(run_dir: str | Path) -> list[ArtifactDocument]:
+    """Build searchable documents from run groups, offers, pairs, and summary data."""
     run_path = Path(run_dir)
     assignments = read_csv_rows(run_path / "product_assignments.csv")
     assignments_by_source = {row.get("source_id", ""): row for row in assignments}
@@ -44,6 +46,7 @@ def index_artifacts(
     batch_size: int = 128,
     embed: bool = True,
 ) -> dict[str, object]:
+    """Index completed run artifacts for semantic and lexical search."""
     try:
         import psycopg
     except ImportError as exc:  # pragma: no cover - dependency is installed in the project venv.
@@ -101,6 +104,7 @@ def search_artifacts(
     limit: int = 10,
     artifact_type: str | None = None,
 ) -> list[dict[str, object]]:
+    """Search indexed run artifacts by text, type, and run id."""
     try:
         import psycopg
     except ImportError as exc:  # pragma: no cover - dependency is installed in the project venv.
@@ -139,6 +143,7 @@ def search_artifacts(
 
 
 def ensure_artifact_index(conn: object, *, embedding_dimensions: int) -> None:
+    """Create the Postgres artifact index table when needed."""
     vector_type = f"vector({embedding_dimensions})"
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -174,6 +179,7 @@ def ensure_artifact_index(conn: object, *, embedding_dimensions: int) -> None:
 
 
 def embed_artifacts(conn: object, run_id: str, docs: list[ArtifactDocument], *, batch_size: int) -> int:
+    """Embed artifact documents for semantic search."""
     embedder = EmbeddingProvider()
     embedded = 0
     for batch in batched(docs, batch_size):
@@ -191,6 +197,7 @@ def embed_artifacts(conn: object, run_id: str, docs: list[ArtifactDocument], *, 
 
 
 def artifact_search_sql(*, include_vector: bool) -> str:
+    """Return the SQL used for artifact lexical and vector search."""
     vector_select = (
         ", CASE WHEN embedding IS NOT NULL THEN 1 - (embedding <=> %(embedding)s) ELSE 0.0 END AS vector_score"
         if include_vector
@@ -252,6 +259,7 @@ def artifact_search_sql(*, include_vector: bool) -> str:
 
 
 def group_documents(run_path: Path, assignments_by_source: dict[str, dict[str, str]]) -> list[ArtifactDocument]:
+    """Create searchable documents for dedupe groups."""
     docs: list[ArtifactDocument] = []
     for group in read_jsonl(run_path / "dedupe_groups.jsonl"):
         source_ids = [str(item) for item in group.get("source_ids", [])]
@@ -289,6 +297,7 @@ def group_documents(run_path: Path, assignments_by_source: dict[str, dict[str, s
 
 
 def offer_documents(assignments: list[dict[str, str]]) -> list[ArtifactDocument]:
+    """Create searchable documents for source offers."""
     docs = []
     for row in assignments:
         title = row.get("name_raw", "")
@@ -324,6 +333,7 @@ def offer_documents(assignments: list[dict[str, str]]) -> list[ArtifactDocument]
 
 
 def pair_documents(run_path: Path, assignments_by_source: dict[str, dict[str, str]]) -> list[ArtifactDocument]:
+    """Build pair documents."""
     docs: dict[str, ArtifactDocument] = {}
     for row in read_pair_rows(run_path):
         left_id = row.get("product_a_id", "")
@@ -380,6 +390,7 @@ def pair_documents(run_path: Path, assignments_by_source: dict[str, dict[str, st
 
 
 def summary_document(run_path: Path) -> ArtifactDocument | None:
+    """Create a searchable document for the run summary."""
     path = run_path / "summary_report.json"
     if not path.exists():
         return None
@@ -389,6 +400,7 @@ def summary_document(run_path: Path) -> ArtifactDocument | None:
 
 
 def read_pair_rows(run_path: Path) -> list[dict[str, str]]:
+    """Read pair rows from parquet or CSV artifacts."""
     rows: list[dict[str, str]] = []
     parquet_path = run_path / "candidate_pairs.parquet"
     if parquet_path.exists():
@@ -404,6 +416,7 @@ def read_pair_rows(run_path: Path) -> list[dict[str, str]]:
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    """Read CSV rows from an artifact file."""
     if not path.exists() or path.stat().st_size == 0:
         return []
     with path.open(newline="", encoding="utf-8") as handle:
@@ -411,6 +424,7 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 
 def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+    """Read newline-delimited JSON records from an artifact file."""
     if not path.exists():
         return []
     with path.open(encoding="utf-8") as handle:
@@ -418,6 +432,7 @@ def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
 
 
 def format_offer(row: dict[str, str]) -> str:
+    """Format one offer row into readable artifact text."""
     return " ".join(
         part
         for part in [
@@ -434,6 +449,7 @@ def format_offer(row: dict[str, str]) -> str:
 
 
 def embedding_text_for_artifact(doc: ArtifactDocument) -> str:
+    """Return embedding text for artifact."""
     return "\n".join(
         [
             f"type: {doc.artifact_type}",

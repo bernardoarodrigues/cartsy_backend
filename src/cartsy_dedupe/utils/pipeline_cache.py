@@ -16,6 +16,7 @@ CACHE_SCHEMA_VERSION = 3
 
 
 def stage_cache_enabled() -> bool:
+    """Return whether stage-level pipeline caching is enabled."""
     raw = os.getenv("CARTSY_STAGE_CACHE_ENABLED")
     if raw is None:
         return True
@@ -23,6 +24,7 @@ def stage_cache_enabled() -> bool:
 
 
 def embedding_cache_enabled() -> bool:
+    """Return whether product embedding caching is enabled."""
     raw = os.getenv("CARTSY_EMBEDDING_CACHE_ENABLED")
     if raw is None:
         return True
@@ -30,6 +32,7 @@ def embedding_cache_enabled() -> bool:
 
 
 def pipeline_cache_root() -> Path:
+    """Return the root directory for local pipeline caches."""
     base = os.getenv("CARTSY_PIPELINE_CACHE_DIR")
     if base:
         return Path(base)
@@ -37,10 +40,12 @@ def pipeline_cache_root() -> Path:
 
 
 def normalization_cache_dir() -> Path:
+    """Return the cache directory for normalized product rows."""
     return pipeline_cache_root() / "normalization"
 
 
 def stage_cache_dir(stage_name: str) -> Path:
+    """Return the cache directory for stage payloads."""
     path = pipeline_cache_root() / stage_name
     if stage_name == "embeddings":
         path = path / "all-products"
@@ -48,14 +53,17 @@ def stage_cache_dir(stage_name: str) -> Path:
 
 
 def embedding_cache_dir() -> Path:
+    """Return embedding cache dir."""
     return stage_cache_dir("embeddings")
 
 
 def file_sha256(path: Path) -> str:
+    """Compute a SHA-256 fingerprint for a file."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def code_fingerprint(*relative_paths: str) -> dict[str, str]:
+    """Fingerprint source files that affect a cached stage."""
     package_root = Path(__file__).resolve().parents[1]
     return {
         relative_path: file_sha256(package_root / relative_path)
@@ -64,18 +72,22 @@ def code_fingerprint(*relative_paths: str) -> dict[str, str]:
 
 
 def normalize_module_hash() -> str:
+    """Fingerprint the normalization code path."""
     return file_sha256(Path(__file__).resolve().parents[1] / "normalize.py")
 
 
 def stage_env_fingerprint(names: list[str]) -> dict[str, str | None]:
+    """Capture environment variables that affect a cache key."""
     return {name: os.getenv(name) for name in names}
 
 
 def cache_key(payload: dict[str, Any]) -> str:
+    """Hash cache metadata into a stable cache key."""
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def normalization_cache_key(*, input_path: Path, limit: int | None, normalize_hash: str) -> str:
+    """Build the cache key for normalized product rows."""
     stat = input_path.stat()
     key_payload = {
         "cache_schema_version": CACHE_SCHEMA_VERSION,
@@ -96,6 +108,7 @@ def retrieval_cache_key(
     env: dict[str, str | None],
     code: dict[str, str],
 ) -> str:
+    """Extract retrieval cache key."""
     return cache_key(
         {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
@@ -116,6 +129,7 @@ def retrieval_layer_cache_key(
     env: dict[str, str | None],
     code: dict[str, str],
 ) -> str:
+    """Extract retrieval layer cache key."""
     return cache_key(
         {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
@@ -137,6 +151,7 @@ def embedding_cache_key(
     embedding_dimensions: int,
     code: dict[str, str],
 ) -> str:
+    """Return embedding cache key."""
     return cache_key(
         {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
@@ -156,6 +171,7 @@ def scoring_cache_key(
     config: PipelineConfig,
     code: dict[str, str],
 ) -> str:
+    """Build the cache key for scored candidate pairs."""
     return cache_key(
         {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
@@ -172,6 +188,7 @@ def clustering_cache_key(
     scoring_key: str,
     code: dict[str, str],
 ) -> str:
+    """Build the cache key for clustered output groups."""
     return cache_key(
         {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
@@ -183,10 +200,12 @@ def clustering_cache_key(
 
 
 def cache_path_for(stage_name: str, key: str) -> Path:
+    """Resolve the cache file path for a key and extension."""
     return stage_cache_dir(stage_name) / f"{key}.json"
 
 
 def embedding_text_hash(text: str) -> str:
+    """Return embedding text hash."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -195,6 +214,7 @@ def find_embedding_matrix_cache(
     normalization_key: str,
     expected_dimensions: int,
 ) -> tuple[Path, dict[str, int], np.ndarray] | None:
+    """Find a reusable embedding matrix cache file."""
     for matrix_cache in iter_embedding_matrix_caches(
         expected_dimensions=expected_dimensions,
         normalization_key=normalization_key,
@@ -208,6 +228,7 @@ def iter_embedding_matrix_caches(
     expected_dimensions: int,
     normalization_key: str | None = None,
 ) -> list[tuple[Path, dict[str, int], np.ndarray]]:
+    """Iterate over embedding matrix cache metadata files."""
     cache_dir = embedding_cache_dir()
     pattern = (
         f"embeddings_{normalization_key}_*.source_id_to_index.json"
@@ -239,11 +260,13 @@ def iter_embedding_matrix_caches(
 
 
 def product_signature(products: list[NormalizedProduct]) -> str:
+    """Fingerprint normalized products for downstream cache keys."""
     payload = [asdict(product) for product in products]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def pair_blocks_to_records(pair_blocks: dict[tuple[int, int], set[str]]) -> list[dict[str, object]]:
+    """Build pair blocks to records."""
     return [
         {
             "left_index": left,
@@ -255,6 +278,7 @@ def pair_blocks_to_records(pair_blocks: dict[tuple[int, int], set[str]]) -> list
 
 
 def retrieval_rows_to_records(rows: list[tuple[int, int, str]]) -> list[dict[str, object]]:
+    """Extract retrieval rows to records."""
     return [
         {
             "left_index": left,
@@ -266,6 +290,7 @@ def retrieval_rows_to_records(rows: list[tuple[int, int, str]]) -> list[dict[str
 
 
 def retrieval_rows_from_records(records: list[dict[str, Any]]) -> list[tuple[int, int, str]]:
+    """Extract retrieval rows from records."""
     rows: list[tuple[int, int, str]] = []
     for record in records:
         if not isinstance(record, dict):
@@ -281,6 +306,7 @@ def retrieval_rows_from_records(records: list[dict[str, Any]]) -> list[tuple[int
 
 
 def pair_blocks_from_records(records: list[dict[str, Any]]) -> dict[tuple[int, int], set[str]]:
+    """Build pair blocks from records."""
     return {
         (int(record["left_index"]), int(record["right_index"])): set(record.get("blocking_keys") or [])
         for record in records
@@ -289,10 +315,12 @@ def pair_blocks_from_records(records: list[dict[str, Any]]) -> dict[tuple[int, i
 
 
 def candidate_pairs_to_records(candidate_pairs: list[CandidatePair]) -> list[dict[str, Any]]:
+    """Serialize candidate pairs for stage-cache storage."""
     return [asdict(pair) for pair in candidate_pairs]
 
 
 def candidate_pairs_from_records(records: list[dict[str, Any]]) -> list[CandidatePair]:
+    """Deserialize cached candidate pairs."""
     pairs: list[CandidatePair] = []
     for record in records:
         if not isinstance(record, dict):
@@ -308,6 +336,7 @@ def candidate_pairs_from_records(records: list[dict[str, Any]]) -> list[Candidat
 
 
 def clusters_to_records(clusters: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Serialize clusters for stage-cache storage."""
     return json.loads(json.dumps(clusters, ensure_ascii=False, sort_keys=True))
 
 
@@ -317,6 +346,7 @@ def write_stage_cache(
     metadata: dict[str, Any],
     payload: dict[str, Any],
 ) -> None:
+    """Write a stage-cache payload with metadata."""
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = {
         "metadata": metadata,
@@ -326,6 +356,7 @@ def write_stage_cache(
 
 
 def read_stage_cache(path: Path) -> dict[str, Any] | None:
+    """Read and validate a stage-cache payload."""
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -342,6 +373,7 @@ def read_stage_cache(path: Path) -> dict[str, Any] | None:
 
 
 def stage_cache_status(path: Path, key: str, *, enabled: bool | None = None) -> dict[str, object]:
+    """Build the status block recorded in summary_report.json."""
     return {
         "enabled": int(stage_cache_enabled() if enabled is None else enabled),
         "used": 0,
@@ -351,6 +383,7 @@ def stage_cache_status(path: Path, key: str, *, enabled: bool | None = None) -> 
 
 
 def read_cache_payload(path: Path, *, enabled: bool | None = None) -> dict[str, Any] | None:
+    """Read a cache payload from disk when present."""
     if not (stage_cache_enabled() if enabled is None else enabled):
         return None
     blob = read_stage_cache(path)
@@ -366,12 +399,14 @@ def write_cache_payload(
     payload: dict[str, Any],
     enabled: bool | None = None,
 ) -> None:
+    """Write a JSON cache payload atomically enough for local reuse."""
     if not (stage_cache_enabled() if enabled is None else enabled):
         return
     write_stage_cache(path, metadata=metadata, payload=payload)
 
 
 def cached_product_from_record(record: dict[str, Any]) -> NormalizedProduct:
+    """Rehydrate a normalized product from a cache record."""
     payload = dict(record)
     payload["model_tokens"] = tuple(payload.get("model_tokens") or [])
     payload["quality_flags"] = tuple(payload.get("quality_flags") or [])
@@ -381,6 +416,7 @@ def cached_product_from_record(record: dict[str, Any]) -> NormalizedProduct:
 
 
 def read_normalization_cache(path: Path) -> list[NormalizedProduct] | None:
+    """Read cached normalized products from disk."""
     blob = read_stage_cache(path)
     if blob is None:
         return None
@@ -394,6 +430,7 @@ def read_normalization_cache(path: Path) -> list[NormalizedProduct] | None:
 
 
 def write_normalization_cache(path: Path, *, products: list[NormalizedProduct], metadata: dict[str, Any]) -> None:
+    """Write cached normalized products to disk."""
     write_stage_cache(
         path,
         metadata=metadata,
@@ -402,6 +439,7 @@ def write_normalization_cache(path: Path, *, products: list[NormalizedProduct], 
 
 
 def read_embedding_cache(path: Path) -> dict[str, dict[str, Any]] | None:
+    """Read a product embedding cache payload."""
     blob = read_stage_cache(path)
     if blob is None:
         return None
@@ -426,6 +464,7 @@ def read_embedding_cache(path: Path) -> dict[str, dict[str, Any]] | None:
 
 
 def write_embedding_cache(path: Path, *, entries: dict[str, dict[str, Any]], metadata: dict[str, Any]) -> None:
+    """Write a product embedding cache payload."""
     records = [
         {
             "source_id": source_id,

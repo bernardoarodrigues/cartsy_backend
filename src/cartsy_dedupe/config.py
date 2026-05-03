@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PipelineConfig:
+    """Runtime thresholds and caps for one dedupe pipeline execution."""
     merge_threshold: float = 0.84
     ml_model_path: str | None = None
     evidence_merge_threshold: float = 0.78

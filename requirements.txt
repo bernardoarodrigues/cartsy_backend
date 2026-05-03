@@ -1,4 +1,8 @@
+# Runtime and verification dependencies. Keep this file aligned with
+# pyproject.toml so reviewers can use the familiar
+# `pip install -r requirements.txt` path.
 fastapi>=0.115.0
+httpx>=0.27.0
 joblib>=1.4.0
 numpy>=2.0.0
 openai>=1.56.0
@@ -12,4 +16,7 @@ scikit-learn>=1.5.0
 sentence-transformers>=3.0.0
 tqdm>=4.67.0
 uvicorn>=0.30.0
+
+# Local editable package and test runner for submission verification.
+-e .
 pytest>=8.0.0

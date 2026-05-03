@@ -17,6 +17,7 @@ from .training import augment_training_data, train_logistic_regression
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser and subcommands."""
     parser = argparse.ArgumentParser(
         prog="cartsy-dedupe",
         description="Run the Cartsy product deduplication pipeline.",
@@ -185,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the command-line entrypoint and return a process status code."""
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -361,12 +363,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def parse_optional_int(value: str) -> int | None:
+    """Parse optional integer CLI values, including uncapped aliases."""
     if value.lower() in {"none", "null", "unlimited", "uncapped"}:
         return None
     return int(value)
 
 
 def resolve_run_output_dir(output_dir: Path, *, now: datetime | None = None) -> Path:
+    """Resolve the output root into a timestamped run directory."""
     if output_dir.name.startswith("run_"):
         return output_dir
     run_id = (now or datetime.now()).strftime("run_%Y%m%d_%H%M%S")

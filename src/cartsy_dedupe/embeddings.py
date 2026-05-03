@@ -10,6 +10,7 @@ DEFAULT_SENTENCE_TRANSFORMERS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def embedding_provider_name() -> str:
+    """Return the configured embedding backend name."""
     provider = os.getenv("CARTSY_EMBEDDING_PROVIDER", "openai").strip().lower()
     aliases = {
         "sentence_transformers": "sentence-transformers",
@@ -21,6 +22,7 @@ def embedding_provider_name() -> str:
 
 
 def default_embedding_model(provider: str) -> str:
+    """Return the default model for an embedding backend."""
     if provider == "openai":
         return os.getenv("OPENAI_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL)
     if provider == "sentence-transformers":
@@ -29,11 +31,13 @@ def default_embedding_model(provider: str) -> str:
 
 
 def configured_embedding_model(provider: str | None = None, model: str | None = None) -> str:
+    """Return the selected embedding model from arguments or environment."""
     resolved_provider = provider or embedding_provider_name()
     return model or os.getenv("CARTSY_EMBEDDING_MODEL") or default_embedding_model(resolved_provider)
 
 
 def configured_embedding_dimensions(provider: str | None = None, model: str | None = None) -> int:
+    """Return the expected vector width for the selected embedding model."""
     resolved_provider = provider or embedding_provider_name()
     resolved_model = configured_embedding_model(resolved_provider, model)
     if resolved_provider == "openai":
@@ -50,23 +54,28 @@ def configured_embedding_dimensions(provider: str | None = None, model: str | No
 
 
 def ensure_openai_api_key() -> None:
+    """Ensure an OpenAI API key is configured before remote embedding calls."""
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("Set OPENAI_API_KEY in .env or the environment before using OpenAI embeddings.")
 
 
 @dataclass(slots=True)
 class EmbeddingResult:
+    """Embeddings plus provider usage metadata."""
     embeddings: list[list[float]]
     usage: Any = None
 
 
 class EmbeddingProvider:
+    """Backend adapter for OpenAI or local sentence-transformer embeddings."""
     def __init__(self, *, provider: str | None = None, model: str | None = None) -> None:
+        """Initialize the object state used by this component."""
         self.provider = provider or embedding_provider_name()
         self.model = configured_embedding_model(self.provider, model)
         self._sentence_transformer_model: Any | None = None
 
     def embed_texts(self, texts: list[str]) -> EmbeddingResult:
+        """Embed text strings with the configured backend."""
         if not texts:
             return EmbeddingResult([])
         if self.provider == "openai":
@@ -102,6 +111,7 @@ class EmbeddingProvider:
 
 
 def sentence_transformer_dimensions(model_name: str) -> int:
+    """Return sentence transformer dimensions."""
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:  # pragma: no cover - optional dependency.

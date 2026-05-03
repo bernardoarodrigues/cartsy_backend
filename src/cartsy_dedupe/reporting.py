@@ -15,6 +15,7 @@ def build_summary_report(
     scored_candidate_pairs: int,
     elapsed_seconds: float,
 ) -> dict[str, object]:
+    """Aggregate run metrics, confidence distributions, and diagnostic slices."""
     decisions = Counter(pair.decision for pair in candidate_pairs)
     grouped_records = sum(int(cluster["num_offers"]) for cluster in clusters.values() if int(cluster["num_offers"]) > 1)
     duplicate_records_grouped = sum(int(cluster["num_offers"]) - 1 for cluster in clusters.values() if int(cluster["num_offers"]) > 1)
@@ -48,6 +49,7 @@ def build_summary_report(
 
 
 def confidence_distribution(values: list[float]) -> dict[str, int]:
+    """Bucket pair confidences for summary reporting."""
     buckets = {
         "0.95-1.00": 0,
         "0.90-0.95": 0,
@@ -92,6 +94,7 @@ def ml_threshold_sensitivity(candidate_pairs: list[CandidatePair]) -> dict[str, 
 
 
 def decision_reason_counts(candidate_pairs: list[CandidatePair]) -> dict[str, dict[str, int]]:
+    """Count explanatory decision labels by merge outcome."""
     counts: dict[str, Counter[str]] = {
         "merge": Counter(),
         "no_merge": Counter(),
@@ -109,6 +112,7 @@ def decision_reason_counts(candidate_pairs: list[CandidatePair]) -> dict[str, di
 
 
 def largest_groups(clusters: dict[str, dict[str, object]], limit: int = 10) -> list[dict[str, object]]:
+    """Return the largest dedupe groups for run diagnostics."""
     ordered = sorted(clusters.values(), key=lambda cluster: int(cluster["num_offers"]), reverse=True)
     return [
         {
@@ -124,6 +128,7 @@ def largest_groups(clusters: dict[str, dict[str, object]], limit: int = 10) -> l
 
 
 def lowest_confidence_groups(clusters: dict[str, dict[str, object]], limit: int = 10) -> list[dict[str, object]]:
+    """Return grouped products with the lowest cluster confidence."""
     grouped = [cluster for cluster in clusters.values() if int(cluster["num_offers"]) > 1]
     ordered = sorted(grouped, key=lambda cluster: float(cluster["cluster_confidence"]))
     return [

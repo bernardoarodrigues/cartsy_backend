@@ -13,6 +13,7 @@ from .attributes import (
 
 
 def normalize_row(row: dict[str, str]) -> NormalizedProduct:
+    """Normalize one raw source row into a stable product record."""
     name_raw = row.get("prod_name", "") or ""
     brand_raw = row.get("brand", "") or ""
     category_raw = row.get("category", "") or ""
@@ -93,6 +94,7 @@ def build_quality_flags(
     bad_specs_json: bool,
     identifiers: dict[str, str],
 ) -> list[str]:
+    """Return data-quality flags for incomplete or suspicious product rows."""
     flags: list[str] = []
     if not brand_norm:
         flags.append("missing_brand")
