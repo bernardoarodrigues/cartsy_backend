@@ -47,8 +47,6 @@ def normalization_cache_dir() -> Path:
 def stage_cache_dir(stage_name: str) -> Path:
     """Return the cache directory for stage payloads."""
     path = pipeline_cache_root() / stage_name
-    if stage_name == "embeddings":
-        path = path / "all-products"
     return path
 
 
