@@ -4,13 +4,6 @@
 
 Product entity resolution pipeline for the Cartsy challenge. The project ingests messy product CSVs, normalizes them into a stable schema, retrieves candidate duplicate pairs with Postgres exact/FTS/trigram/vector layers, scores uncertain pairs with a calibrated logistic-regression model, and writes queryable deduped-product artifacts.
 
-## What Is Included
-
-- `src/cartsy_dedupe/`: ingestion, normalization, retrieval, scoring, clustering, artifact search, API, and training code.
-- `models/train_20260502_130136_final_submission/`: committed final logistic-regression model plus compact training diagnostics.
-- `PIPELINE.md`: pipeline walkthrough and runtime trade-offs
-- `TRAINING.md`: supervised training, augmentation, threshold selection, and artifact walkthrough
-
 ## Quick Setup
 
 ```bash
@@ -87,7 +80,7 @@ Semantic indexing over output artifacts:
 
 ## Architecture Overview
 
-See `PIPELINE.md` for the full dedupe pipeline details.
+See `info/PIPELINE.md` for the full dedupe pipeline details.
 
 ![Cartsy runtime dedupe pipeline](diagrams/dedupe-pipeline.svg)
 
@@ -118,7 +111,7 @@ Two products are treated as the same purchasable item only when enough independe
 
 ## Training
 
-See `TRAINING.md` for the full training pipeline details. The committed final model was trained with controlled positive augmentation, dirty-identifier hard negatives, embeddings, calibration, threshold curves, false-positive/false-negative exports, feature coefficients, and risky-cluster diagnostics.
+See `info/TRAINING.md` for the full training pipeline details. The committed final model was trained with controlled positive augmentation, dirty-identifier hard negatives, embeddings, calibration, threshold curves, false-positive/false-negative exports, feature coefficients, and risky-cluster diagnostics.
 
 ![Cartsy supervised training pipeline](diagrams/training-pipeline.svg)
 

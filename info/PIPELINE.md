@@ -3,7 +3,7 @@
 This is the production path implemented in `src/cartsy_dedupe/pipeline.py`.
 It is the reviewer-facing runbook for how raw product rows become final
 deduped-product artifacts. For model-specific training details, see
-`TRAINING.md`.
+`info/TRAINING.md`.
 
 ![Cartsy runtime dedupe pipeline](diagrams/dedupe-pipeline.svg)
 
@@ -161,7 +161,7 @@ Trade-off: the model scores pairs, while clustering handles group construction. 
 
 ## 7. Training And Evaluation
 
-Training is documented in detail in `TRAINING.md`. Operationally, the runtime
+Training is documented in detail in `info/TRAINING.md`. Operationally, the runtime
 expects a model bundle whose `feature_columns` exactly match
 `src/cartsy_dedupe/features.py::DEFAULT_FEATURE_COLUMNS`; stale bundles are
 rejected at startup instead of silently scoring with the wrong feature order.

@@ -159,4 +159,4 @@ The evaluator writes `labeled_evaluation.json` with overall precision/recall/F1 
 - Confirm the model threshold and feature columns match `DEFAULT_FEATURE_COLUMNS`.
 - Inspect `false_positives.csv`, `false_negatives.csv`, and `top_risky_clusters.csv` after any retraining.
 - Run `evaluate-run` against the full labeled dataset before changing runtime thresholds.
-- Update this file and `PIPELINE.md` whenever model features, threshold policy, or runtime merge policy changes.
+- Update this file and `info/PIPELINE.md` whenever model features, threshold policy, or runtime merge policy changes.
