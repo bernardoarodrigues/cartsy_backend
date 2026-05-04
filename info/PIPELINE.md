@@ -66,7 +66,7 @@ Trade-off: this avoids embedding truly unrelated products, but logistic regressi
 `src/cartsy_dedupe/features.py` builds the stable pairwise feature contract. `DEFAULT_FEATURE_COLUMNS` is the model contract: adding, removing, or reordering columns invalidates existing `.joblib` bundles and requires retraining.
 
 | Feature                           | Meaning                                                                                             |
-| --------------------------------- | --------------------------------------------------------------------------------------------------- | ----- | ------------- |
+| --------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `same_retailer`                   | 1 if both products come from the same retailer                                                      |
 | `brand_exact`                     | 1 if normalized brand strings are identical                                                         |
 | `brand_fuzzy`                     | Levenshtein ratio of normalized brand strings                                                       |
@@ -79,7 +79,7 @@ Trade-off: this avoids embedding truly unrelated products, but logistic regressi
 | `size_conflict`                   | 1 if both products have an unambiguous size and they differ                                         |
 | `pack_match`                      | 1 if both products have an explicit pack count and they agree                                       |
 | `pack_conflict`                   | 1 if both products have an explicit pack count and they differ                                      |
-| `price_ratio_diff`                | Absolute relative price difference — `                                                              | p1-p2 | / max(p1,p2)` |
+| `price_ratio_diff`                | Absolute relative price difference: `abs(p1 - p2) / max(p1, p2)` when both prices are present      |
 | `price_both_present`              | 1 if both products have a non-null price                                                            |
 | `identifier_any`                  | 1 if any shared identifier was found (in-product or from retrieval evidence)                        |
 | `exact_global_id`                 | 1 if a shared EAN, GTIN, or UPC was found in retrieval evidence                                     |
