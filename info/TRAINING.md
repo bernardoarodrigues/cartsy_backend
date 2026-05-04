@@ -2,7 +2,7 @@
 
 This document explains how the supervised pairwise model is built, evaluated, and used by the runtime dedupe pipeline.
 
-![Cartsy supervised training pipeline](diagrams/training-pipeline.svg)
+![Cartsy supervised training pipeline](../diagrams/training-pipeline.svg)
 
 ## Goal
 

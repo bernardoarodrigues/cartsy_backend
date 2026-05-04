@@ -5,7 +5,7 @@ It is the reviewer-facing runbook for how raw product rows become final
 deduped-product artifacts. For model-specific training details, see
 `info/TRAINING.md`.
 
-![Cartsy runtime dedupe pipeline](diagrams/dedupe-pipeline.svg)
+![Cartsy runtime dedupe pipeline](../diagrams/dedupe-pipeline.svg)
 
 ## Tech Stack
 
